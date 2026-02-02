@@ -104,6 +104,37 @@ const DEFAULT_TIMEOUT_MS = 30000;
 // Environment Variable Building
 // =============================================================================
 
+
+/**
+ * Sanitize environment variable value to remove dangerous control characters.
+ * Removes null bytes and control characters except newline and tab.
+ * 
+ * @param value - The value to sanitize
+ * @returns Sanitized value safe for environment variables
+ */
+function sanitizeEnvValue(value: string): string {
+  // Remove null bytes and control characters except newline/tab
+  return value.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, '');
+}
+
+/**
+ * Validate ticket ID to prevent path traversal in hooks.
+ * Same validation as in state.ts.
+ * 
+ * @param ticketId - The ticket ID to validate
+ * @throws Error if ticket ID contains invalid characters or path traversal patterns
+ */
+function validateTicketId(ticketId: string): void {
+  // Check for path traversal first (more specific error message)
+  if (ticketId.includes('..') || ticketId.includes('/') || ticketId.includes('\\')) {
+    throw new Error(`Invalid ticket ID: ${ticketId}. Path traversal not allowed.`);
+  }
+  // Then check for valid characters
+  if (!/^[a-zA-Z0-9_-]+$/.test(ticketId)) {
+    throw new Error(`Invalid ticket ID: ${ticketId}. Only alphanumeric, hyphens, and underscores allowed.`);
+  }
+}
+
 /**
  * Build environment variables from hook context
  */
@@ -117,28 +148,30 @@ function buildEnvVars(
   };
 
   if (context.ticketId !== undefined) {
-    env.PLANBOT_TICKET_ID = String(context.ticketId);
+    // Validate ticketId before using in env vars
+    validateTicketId(context.ticketId);
+    env.PLANBOT_TICKET_ID = sanitizeEnvValue(String(context.ticketId));
   }
   if (context.ticketTitle !== undefined) {
-    env.PLANBOT_TICKET_TITLE = String(context.ticketTitle);
+    env.PLANBOT_TICKET_TITLE = sanitizeEnvValue(String(context.ticketTitle));
   }
   if (context.ticketStatus !== undefined) {
-    env.PLANBOT_TICKET_STATUS = String(context.ticketStatus);
+    env.PLANBOT_TICKET_STATUS = sanitizeEnvValue(String(context.ticketStatus));
   }
   if (context.planPath !== undefined) {
-    env.PLANBOT_PLAN_PATH = String(context.planPath);
+    env.PLANBOT_PLAN_PATH = sanitizeEnvValue(String(context.planPath));
   }
   if (context.plan !== undefined) {
-    env.PLANBOT_PLAN = String(context.plan);
+    env.PLANBOT_PLAN = sanitizeEnvValue(String(context.plan));
   }
   if (context.error !== undefined) {
-    env.PLANBOT_ERROR = String(context.error);
+    env.PLANBOT_ERROR = sanitizeEnvValue(String(context.error));
   }
   if (context.question !== undefined) {
-    env.PLANBOT_QUESTION = String(context.question);
+    env.PLANBOT_QUESTION = sanitizeEnvValue(String(context.question));
   }
   if (context.questionId !== undefined) {
-    env.PLANBOT_QUESTION_ID = String(context.questionId);
+    env.PLANBOT_QUESTION_ID = sanitizeEnvValue(String(context.questionId));
   }
 
   return env;

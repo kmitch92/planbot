@@ -54,6 +54,29 @@ function getPaths(projectRoot: string): PlanbotPaths {
   };
 }
 
+
+// =============================================================================
+// Security: Ticket ID Validation
+// =============================================================================
+
+/**
+ * Validate ticket ID to prevent path traversal attacks.
+ * Only allows alphanumeric characters, hyphens, and underscores.
+ * 
+ * @param ticketId - The ticket ID to validate
+ * @throws Error if ticket ID contains invalid characters or path traversal patterns
+ */
+function validateTicketId(ticketId: string): void {
+  // Check for path traversal first (more specific error message)
+  if (ticketId.includes('..') || ticketId.includes('/') || ticketId.includes('\\')) {
+    throw new Error(`Invalid ticket ID: ${ticketId}. Path traversal not allowed.`);
+  }
+  // Then check for valid characters
+  if (!/^[a-zA-Z0-9_-]+$/.test(ticketId)) {
+    throw new Error(`Invalid ticket ID: ${ticketId}. Only alphanumeric, hyphens, and underscores allowed.`);
+  }
+}
+
 // =============================================================================
 // State Manager Interface
 // =============================================================================
@@ -185,6 +208,7 @@ function createStateManager(): StateManager {
     },
 
     async savePlan(projectRoot: string, ticketId: string, plan: string): Promise<string> {
+      validateTicketId(ticketId);
       const paths = getPaths(projectRoot);
       const planPath = join(paths.plans, `${ticketId}.md`);
       logger.debug('Saving plan', { ticketId, path: planPath });
@@ -196,6 +220,7 @@ function createStateManager(): StateManager {
     },
 
     async loadPlan(projectRoot: string, ticketId: string): Promise<string | null> {
+      validateTicketId(ticketId);
       const paths = getPaths(projectRoot);
       const planPath = join(paths.plans, `${ticketId}.md`);
       logger.debug('Loading plan', { ticketId, path: planPath });
@@ -211,6 +236,7 @@ function createStateManager(): StateManager {
     },
 
     async appendLog(projectRoot: string, ticketId: string, entry: string): Promise<void> {
+      validateTicketId(ticketId);
       const paths = getPaths(projectRoot);
       const logPath = join(paths.logs, `${ticketId}.log`);
       logger.debug('Appending to log', { ticketId, path: logPath });
@@ -265,6 +291,7 @@ function createStateManager(): StateManager {
     },
 
     async saveSession(projectRoot: string, ticketId: string, sessionId: string): Promise<void> {
+      validateTicketId(ticketId);
       const paths = getPaths(projectRoot);
       const sessionPath = join(paths.sessions, `${ticketId}.txt`);
       logger.debug('Saving session', { ticketId, sessionPath });
@@ -275,6 +302,7 @@ function createStateManager(): StateManager {
     },
 
     async loadSession(projectRoot: string, ticketId: string): Promise<string | null> {
+      validateTicketId(ticketId);
       const paths = getPaths(projectRoot);
       const sessionPath = join(paths.sessions, `${ticketId}.txt`);
       logger.debug('Loading session', { ticketId, sessionPath });

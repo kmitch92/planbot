@@ -141,7 +141,8 @@ export function createWebhookServer(config: WebhookServerConfig): WebhookServer 
     }
 
     // Get raw body for signature verification
-    const rawBody = JSON.stringify(req.body);
+    const rawBody = (req as Request & { rawBody?: Buffer }).rawBody || Buffer.from('');
+
     const expectedSignature = crypto
       .createHmac("sha256", secret)
       .update(rawBody)
@@ -193,7 +194,12 @@ export function createWebhookServer(config: WebhookServerConfig): WebhookServer 
     const expressApp = express();
 
     // Middleware
-    expressApp.use(express.json());
+    // Capture raw body for HMAC verification before JSON parsing
+    expressApp.use(express.json({
+      verify: (req: Request & { rawBody?: Buffer }, _res, buf) => {
+        req.rawBody = buf;
+      }
+    }));
     expressApp.use(corsMiddleware);
     expressApp.use(requestLogger);
 
@@ -210,8 +216,8 @@ export function createWebhookServer(config: WebhookServerConfig): WebhookServer 
       });
     });
 
-    // Status endpoint (no auth required)
-    expressApp.get(`${basePath}/status`, (_req, res) => {
+    // Status endpoint (auth required if secret configured)
+    expressApp.get(`${basePath}/status`, verifySignature, (_req, res) => {
       res.json({
         pendingApprovals: Array.from(pending.pendingApprovals),
         pendingQuestions: Array.from(pending.pendingQuestions),
