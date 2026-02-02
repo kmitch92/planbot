@@ -1,0 +1,93 @@
+{
+  "config": {
+    "model": "sonnet",
+    "maxBudgetPerTicket": 25,
+    "continueOnError": true,
+    "parallelExecution": false,
+    "dryRun": false,
+    "workingDirectory": "./",
+    "timeout": 300000,
+    "retryAttempts": 2,
+    "retryDelay": 5000
+  },
+  "messaging": {
+    "platform": "slack",
+    "channel": "#planbot-updates",
+    "notifyOnStart": true,
+    "notifyOnComplete": true,
+    "notifyOnError": true,
+    "mentionOnError": ["@oncall"]
+  },
+  "hooks": {
+    "beforeAll": "echo 'Starting ticket batch execution'",
+    "afterAll": "echo 'Completed ticket batch execution'",
+    "beforeEach": "git status --short",
+    "afterEach": "npm run lint",
+    "onError": "git checkout .",
+    "onSuccess": "git add -A"
+  },
+  "tickets": [
+    {
+      "id": "feature-001",
+      "title": "Add user authentication",
+      "description": "Implement JWT-based authentication with login and logout endpoints. Include refresh token rotation and secure cookie storage.",
+      "status": "pending",
+      "priority": 1,
+      "tags": ["feature", "auth", "security"],
+      "context": {
+        "files": ["src/auth/", "src/middleware/"],
+        "dependencies": ["jsonwebtoken", "bcrypt"]
+      }
+    },
+    {
+      "id": "feature-002",
+      "title": "Create user profile API",
+      "description": "Build REST API endpoints for user profile CRUD operations. Include validation with Zod schemas and proper error handling.",
+      "status": "pending",
+      "priority": 2,
+      "tags": ["feature", "api"],
+      "dependsOn": ["feature-001"],
+      "context": {
+        "files": ["src/api/users/"],
+        "schema": "src/schemas/user.ts"
+      }
+    },
+    {
+      "id": "bugfix-001",
+      "title": "Fix memory leak in websocket handler",
+      "description": "Connection handlers are not being cleaned up on disconnect. Add proper cleanup in the disconnect event and implement connection pooling limits.",
+      "status": "pending",
+      "priority": 1,
+      "tags": ["bugfix", "performance"],
+      "context": {
+        "files": ["src/websocket/handler.ts"],
+        "issue": "https://github.com/org/repo/issues/123"
+      }
+    },
+    {
+      "id": "refactor-001",
+      "title": "Migrate to ES modules",
+      "description": "Convert CommonJS require statements to ES module imports. Update package.json type field and ensure all imports use proper extensions.",
+      "status": "pending",
+      "priority": 3,
+      "tags": ["refactor", "maintenance"],
+      "context": {
+        "files": ["src/"],
+        "exclude": ["src/legacy/"]
+      }
+    },
+    {
+      "id": "test-001",
+      "title": "Add integration tests for auth flow",
+      "description": "Write integration tests covering login, logout, token refresh, and session invalidation. Use test database and mock external services.",
+      "status": "pending",
+      "priority": 2,
+      "tags": ["testing"],
+      "dependsOn": ["feature-001"],
+      "context": {
+        "testDir": "tests/integration/auth/",
+        "fixtures": "tests/fixtures/users.json"
+      }
+    }
+  ]
+}

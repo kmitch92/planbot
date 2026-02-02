@@ -1,0 +1,15 @@
+{
+  "config": {
+    "model": "sonnet",
+    "maxBudgetPerTicket": 10,
+    "continueOnError": false
+  },
+  "tickets": [
+    {
+      "id": "example-001",
+      "title": "Example ticket",
+      "description": "Describe what you want Claude to do...",
+      "status": "pending"
+    }
+  ]
+}
