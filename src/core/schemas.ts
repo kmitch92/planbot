@@ -91,12 +91,12 @@ export const TimeoutsSchema = z.object({
 
 export const ShellHookActionSchema = z.object({
   type: z.literal("shell"),
-  command: z.string().min(1),
+  command: z.string().min(1).max(10000),
 });
 
 export const PromptHookActionSchema = z.object({
   type: z.literal("prompt"),
-  prompt: z.string().min(1),
+  prompt: z.string().min(1).max(50000),
 });
 
 export const HookActionSchema = z.discriminatedUnion("type", [
@@ -171,11 +171,11 @@ export const TicketStatusSchema = z.enum([
 
 export const TicketSchema = z.object({
   /** Unique ticket identifier */
-  id: z.string().min(1),
+  id: z.string().min(1).max(100),
   /** Short descriptive title */
-  title: z.string().min(1),
+  title: z.string().min(1).max(200),
   /** Detailed description of the work to be done */
-  description: z.string().min(1),
+  description: z.string().min(1).max(50000),
   /** Priority level (higher = more urgent, default: 0) */
   priority: z.number().int().default(0),
   /** Current ticket status */
@@ -215,7 +215,7 @@ export const PhaseSchema = z.enum([
 ]);
 
 export const PendingQuestionSchema = z.object({
-  id: z.string().min(1),
+  id: z.string().min(1).max(100),
   ticketId: z.string().min(1),
   question: z.string().min(1),
   askedAt: z.string().datetime(),
@@ -251,7 +251,7 @@ export const QuestionOptionSchema = z.object({
 
 export const QuestionSchema = z.object({
   /** Unique question identifier */
-  id: z.string().min(1),
+  id: z.string().min(1).max(100),
   /** ID of ticket that generated the question */
   ticketId: z.string().min(1),
   /** The question text */

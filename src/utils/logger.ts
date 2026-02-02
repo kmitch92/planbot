@@ -1,6 +1,35 @@
 import chalk from 'chalk';
 
 /**
+ * Mask sensitive tokens in strings to prevent accidental logging.
+ * Shows first 4 and last 4 characters: "xoxb-1234...5678"
+ */
+export function maskToken(token: string): string {
+  if (token.length <= 12) {
+    return '***MASKED***';
+  }
+  return `${token.slice(0, 4)}...${token.slice(-4)}`;
+}
+
+/**
+ * Sanitize an object for logging by masking fields that look like tokens.
+ */
+export function sanitizeForLogging(obj: Record<string, unknown>): Record<string, unknown> {
+  const sensitiveKeys = ['token', 'secret', 'password', 'apikey', 'api_key', 'bottoken', 'apptoken'];
+  const result: Record<string, unknown> = {};
+  
+  for (const [key, value] of Object.entries(obj)) {
+    const lowerKey = key.toLowerCase();
+    if (sensitiveKeys.some(k => lowerKey.includes(k)) && typeof value === 'string') {
+      result[key] = maskToken(value);
+    } else {
+      result[key] = value;
+    }
+  }
+  return result;
+}
+
+/**
  * Log levels ordered by severity
  */
 const LOG_LEVELS = {
