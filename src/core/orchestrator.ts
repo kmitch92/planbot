@@ -12,6 +12,7 @@ import {
   type PendingQuestion,
   parseTicketsFile,
   validateTicketDependencies,
+  TicketSchema,
 } from "./schemas.js";
 import { stateManager } from "./state.js";
 import { claude } from "./claude.js";
@@ -57,6 +58,8 @@ export interface Orchestrator extends EventEmitter<OrchestratorEvents> {
   answerQuestion(questionId: string, answer: string): Promise<void>;
   getStatus(): { state: State; currentTicket?: Ticket };
   isRunning(): boolean;
+  queueTicket(ticket: Ticket): Promise<void>;
+  getTickets(): Ticket[];
 }
 
 // =============================================================================
@@ -92,6 +95,7 @@ class OrchestratorImpl
   private running = false;
   private pauseRequested = false;
   private stopRequested = false;
+  private dynamicTickets: Ticket[] = [];
 
   private pendingApprovals = new Map<string, PendingApprovalResolvers>();
   private pendingQuestionAnswers = new Map<string, PendingQuestionResolvers>();
@@ -116,8 +120,11 @@ class OrchestratorImpl
     logger.info("Starting orchestrator", { projectRoot: this.projectRoot });
 
     try {
-      await this.loadTicketsFile();
-      await stateManager.init(this.projectRoot);
+      // Only load tickets file on first run (when ticketsFile is null)
+      if (!this.ticketsFile) {
+        await this.loadTicketsFile();
+        await stateManager.init(this.projectRoot);
+      }
       this.state = await stateManager.load(this.projectRoot);
 
       this.running = true;
@@ -266,6 +273,17 @@ class OrchestratorImpl
 
   isRunning(): boolean {
     return this.running;
+  }
+
+  async queueTicket(ticket: Ticket): Promise<void> {
+    const validated = TicketSchema.parse(ticket);
+    this.dynamicTickets.push(validated);
+    logger.info("Ticket queued dynamically", { ticketId: validated.id });
+  }
+
+  getTickets(): Ticket[] {
+    const fileTickets = this.ticketsFile?.tickets ?? [];
+    return [...fileTickets, ...this.dynamicTickets];
   }
 
   // ===========================================================================
@@ -837,14 +855,15 @@ class OrchestratorImpl
   }
 
   private getProcessableTickets(tickets: Ticket[]): Ticket[] {
+    const allTickets = [...tickets, ...this.dynamicTickets];
     const completed = new Set(
-      tickets.filter((t) => t.status === "completed").map((t) => t.id)
+      allTickets.filter((t) => t.status === "completed").map((t) => t.id)
     );
     const failed = new Set(
-      tickets.filter((t) => t.status === "failed").map((t) => t.id)
+      allTickets.filter((t) => t.status === "failed").map((t) => t.id)
     );
 
-    return tickets.filter((ticket) => {
+    return allTickets.filter((ticket) => {
       if (ticket.status !== "pending") {
         return false;
       }
