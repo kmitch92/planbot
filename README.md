@@ -8,6 +8,7 @@ Inspired by the [ralph](https://github.com/anthropics/ralph) pattern.
 
 - **Autonomous Execution**: Claude generates and executes plans for each ticket
 - **Plan Approval Workflow**: Review plans before execution (or auto-approve)
+- **Continuous Mode**: Keep running and prompt for new plans after queue completion
 - **Messaging Integration**: Slack, Discord, and Telegram support for notifications and approvals
 - **Dependency Management**: Define ticket dependencies for ordered execution
 - **Hook System**: Run shell commands or custom prompts at key lifecycle events
@@ -174,6 +175,43 @@ planbot start --skip-permissions --model opus
 - `--auto-approve`: Auto-approve all plans (bypass approval workflow)
 - `--skip-permissions`: Skip permission prompts (dangerous)
 - `--model <model>`: Override config model (`sonnet`, `opus`, `haiku`)
+- `-C, --continuous`: Keep running and prompt for new plans after completion
+- `--continuous-timeout <ms>`: Timeout for next plan prompt (default: 1 hour)
+
+### Continuous Mode
+
+Keep planbot running and prompt for new plans after each completion:
+
+```bash
+planbot start --continuous
+```
+
+After all tickets in the queue complete, planbot prompts you to enter a new plan:
+- Type your plan text (first line becomes the title, rest becomes the description)
+- Type "exit", "quit", "q", "done", or "stop" to exit
+
+**Options:**
+- `-C, --continuous`: Keep running and prompt for new plans after completion
+- `--continuous-timeout <ms>`: Timeout for next plan prompt (default: 1 hour)
+
+**Example session:**
+```
+>>> Queue processing complete
+
+Queue Summary:
+  Completed: 3
+
+--- Continuous Mode ---
+Enter your next plan (or "exit" to quit):
+> Add rate limiting to the API
+First line becomes the title
+
+Queuing: Add rate limiting to the API
+ID: cont-1706886400000-a1b2c3d4
+
+>>> Starting: Add rate limiting to the API
+...
+```
 
 #### `planbot resume`
 Resume paused or stopped processing.
