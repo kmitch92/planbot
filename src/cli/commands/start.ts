@@ -4,11 +4,13 @@ import ora from 'ora';
 import { resolve } from 'node:path';
 import { readFile } from 'node:fs/promises';
 import { parse as parseYaml } from 'yaml';
+import { randomBytes } from 'node:crypto';
 
 import { createOrchestrator, type Orchestrator } from '../../core/orchestrator.js';
 import { stateManager } from '../../core/state.js';
 import { parseTicketsFile, validateTicketDependencies } from '../../core/schemas.js';
-import { createMultiplexer } from '../../messaging/index.js';
+import type { Ticket } from '../../core/schemas.js';
+import { createMultiplexer, TimeoutError } from '../../messaging/index.js';
 import { createTerminalProvider } from '../../messaging/terminal.js';
 import { fileExists } from '../../utils/fs.js';
 import { logger } from '../../utils/logger.js';
@@ -21,6 +23,127 @@ interface StartOptions {
   dryRun?: boolean;
   autoApprove?: boolean;
   skipPermissions?: boolean;
+  continuous?: boolean;
+  continuousTimeout?: number;
+}
+
+// =============================================================================
+// Continuous Mode Helpers
+// =============================================================================
+
+const EXIT_COMMANDS = new Set(['exit', 'quit', 'q', 'done', 'stop']);
+
+export function isExitCommand(input: string): boolean {
+  return EXIT_COMMANDS.has(input.trim().toLowerCase());
+}
+
+export function generateContinuousTicketId(): string {
+  return `cont-${Date.now()}-${randomBytes(4).toString('hex')}`;
+}
+
+export function parseUserInputToTicket(input: string): Ticket | null {
+  // Normalize CRLF to LF
+  const normalized = input.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  const trimmed = normalized.trim();
+  if (!trimmed) return null;
+
+  const firstNewline = trimmed.indexOf('\n');
+  let title: string;
+  let description: string;
+
+  if (firstNewline === -1) {
+    title = trimmed.slice(0, 200);
+    description = trimmed;
+  } else {
+    // Trim the title but preserve description whitespace
+    title = trimmed.slice(0, Math.min(firstNewline, 200)).trim();
+    const rest = trimmed.slice(firstNewline + 1);
+    description = rest || title;
+  }
+
+  return {
+    id: generateContinuousTicketId(),
+    title,
+    description,
+    priority: 0,
+    status: 'pending' as const,
+  };
+}
+
+function displayCompletionSummary(tickets: Ticket[]): void {
+  const completed = tickets.filter(t => t.status === 'completed').length;
+  const failed = tickets.filter(t => t.status === 'failed').length;
+  const skipped = tickets.filter(t => t.status === 'skipped').length;
+
+  console.log(chalk.bold('\nQueue Summary:'));
+  console.log(chalk.green(`  Completed: ${completed}`));
+  if (failed > 0) console.log(chalk.red(`  Failed:    ${failed}`));
+  if (skipped > 0) console.log(chalk.yellow(`  Skipped:   ${skipped}`));
+}
+
+async function runContinuousLoop(
+  orchestrator: Orchestrator,
+  multiplexer: ReturnType<typeof createMultiplexer>,
+  _timeout: number
+): Promise<void> {
+  // Note: timeout parameter reserved for future per-question timeout support
+  // Currently uses multiplexer's configured questionTimeout
+  let emptyInputCount = 0;
+  const maxEmptyInputs = 3;
+
+  while (true) {
+    displayCompletionSummary(orchestrator.getTickets());
+    console.log(chalk.cyan('\n--- Continuous Mode ---'));
+
+    try {
+      const response = await multiplexer.askQuestion({
+        questionId: `continuous-${Date.now()}`,
+        ticketId: 'continuous-mode',
+        ticketTitle: 'Continuous Mode',
+        question: 'Enter your next plan (or "exit" to quit):',
+      });
+
+      const answer = response.answer.trim();
+
+      if (isExitCommand(answer)) {
+        console.log(chalk.green('\nExiting continuous mode.'));
+        break;
+      }
+
+      if (!answer) {
+        emptyInputCount++;
+        if (emptyInputCount >= maxEmptyInputs) {
+          console.log(chalk.yellow('\nNo input received. Exiting.'));
+          break;
+        }
+        console.log(chalk.yellow(`Enter a plan or 'exit' (${maxEmptyInputs - emptyInputCount} attempts left)`));
+        continue;
+      }
+
+      emptyInputCount = 0;
+
+      const ticket = parseUserInputToTicket(response.answer);
+      if (!ticket) {
+        console.log(chalk.yellow('Could not parse input. Try again.'));
+        continue;
+      }
+
+      console.log(chalk.blue(`\nQueuing: ${ticket.title}`));
+      console.log(chalk.dim(`ID: ${ticket.id}\n`));
+
+      await orchestrator.queueTicket(ticket);
+      await orchestrator.start();
+
+    } catch (err) {
+      if (err instanceof TimeoutError) {
+        console.log(chalk.yellow('\nTimeout waiting for input. Exiting.'));
+        break;
+      }
+      throw err;
+    }
+  }
+
+  await multiplexer.disconnectAll();
 }
 
 // =============================================================================
@@ -65,6 +188,8 @@ export function createStartCommand(): Command {
     .option('--dry-run', 'Simulate execution without making changes')
     .option('--auto-approve', 'Automatically approve all plans')
     .option('--skip-permissions', 'Skip Claude permission prompts (dangerous)')
+    .option('-C, --continuous', 'Keep running and prompt for new plans after completion')
+    .option('--continuous-timeout <ms>', 'Timeout for next plan prompt (default: 1 hour)', parseInt)
     .action(async (ticketsFile: string, options: StartOptions) => {
       const cwd = process.cwd();
       const ticketsPath = resolve(cwd, ticketsFile);
@@ -168,6 +293,14 @@ export function createStartCommand(): Command {
         // Start processing
         console.log(chalk.bold('\nStarting queue processing...\n'));
         await orchestrator.start();
+
+        // Continuous mode loop
+        if (options.continuous) {
+          const timeout = options.continuousTimeout ?? config.timeouts.question;
+          await runContinuousLoop(orchestrator, multiplexer, timeout);
+        } else {
+          await multiplexer.disconnectAll();
+        }
 
       } catch (err) {
         spinner.fail('Failed to start');
