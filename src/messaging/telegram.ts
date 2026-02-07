@@ -53,6 +53,19 @@ function truncateText(text: string, maxLength: number): string {
 }
 
 /**
+ * Wrap a promise with a timeout. Rejects with a descriptive error if the promise
+ * doesn't resolve within the specified duration.
+ */
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms)
+    ),
+  ]);
+}
+
+/**
  * Pending rejection state for tracking rejection reason requests.
  */
 interface PendingRejection {
@@ -96,6 +109,12 @@ class TelegramProvider implements MessagingProvider {
   private healthCheckInterval: NodeJS.Timeout | null = null;
   /** Consecutive polling error counter */
   private pollingErrorCount = 0;
+  /** Timestamp of last received update (message or callback) */
+  private lastUpdateReceived = 0;
+  /** Consecutive health check failures */
+  private consecutiveHealthFailures = 0;
+  /** Set of processed callback query IDs to prevent duplicate handling */
+  private processedCallbacks = new Set<string>();
   /** Maximum consecutive polling errors before restart */
   private readonly maxPollingErrors = 5;
 
@@ -141,12 +160,28 @@ class TelegramProvider implements MessagingProvider {
       // Clear any stale webhook BEFORE polling starts
       if (this.usePolling) {
         await this.bot.deleteWebHook();
+
+        // Flush stale updates from previous sessions
+        // getUpdates with offset -1 marks all pending updates as read
+        try {
+          const stale = await this.bot.getUpdates({ offset: -1, limit: 1 });
+          if (stale.length > 0) {
+            // Acknowledge the last update to clear the queue
+            await this.bot.getUpdates({ offset: stale[stale.length - 1].update_id + 1, limit: 0 });
+            logger.info('Flushed stale Telegram updates', { count: stale.length });
+          }
+        } catch (error) {
+          logger.warn('Failed to flush stale updates', {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+
         logger.info("Cleared webhook before starting polling");
       }
 
       // Register ALL event handlers before polling begins
       this.bot.on("message", (msg) => {
-        this.handleMessage(msg).catch((error) => {
+        return this.handleMessage(msg).catch((error) => {
           logger.error("Error handling message", {
             error: error instanceof Error ? error.message : String(error),
           });
@@ -154,7 +189,7 @@ class TelegramProvider implements MessagingProvider {
       });
 
       this.bot.on("callback_query", (query) => {
-        this.handleCallbackQuery(query).catch((error) => {
+        return this.handleCallbackQuery(query).catch((error) => {
           logger.error("Error handling callback query", {
             error: error instanceof Error ? error.message : String(error),
           });
@@ -200,6 +235,7 @@ class TelegramProvider implements MessagingProvider {
       }
 
       this.connected = true;
+      this.lastUpdateReceived = Date.now();
       logger.debug("Telegram provider connected", {
         polling: this.usePolling,
         chatId: this.chatId,
@@ -240,7 +276,10 @@ class TelegramProvider implements MessagingProvider {
     this.pendingQuestionButtons.clear();
     this.storedPlans.clear();
     this.awaitingRejectionReason.clear();
+    this.processedCallbacks.clear();
     this.pollingErrorCount = 0;
+    this.consecutiveHealthFailures = 0;
+    this.lastUpdateReceived = 0;
     this.connected = false;
 
     logger.debug("Telegram provider disconnected");
@@ -254,8 +293,10 @@ class TelegramProvider implements MessagingProvider {
   }
 
   /**
-   * Start periodic health check that verifies bot connectivity.
-   * Runs every 60 seconds and restarts polling if the connection is broken.
+   * Start polling watchdog that monitors for stale polling connections.
+   * If the bot has pending work (approval messages or question buttons)
+   * and no updates have been received for 90 seconds, restarts polling.
+   * Also falls back to getMe() check for general connectivity.
    */
   private startHealthCheck(): void {
     if (this.healthCheckInterval) {
@@ -265,15 +306,46 @@ class TelegramProvider implements MessagingProvider {
     this.healthCheckInterval = setInterval(async () => {
       if (!this.bot || !this.connected) return;
 
-      try {
-        await this.bot.getMe();
-      } catch (error) {
-        logger.warn("Health check failed, restarting polling", {
-          error: error instanceof Error ? error.message : String(error),
+      const hasPendingWork = this.pendingApprovalMessages.size > 0
+        || this.pendingQuestionButtons.size > 0
+        || this.pendingQuestions.size > 0;
+
+      const timeSinceUpdate = Date.now() - this.lastUpdateReceived;
+
+      // If we have pending work and no updates for 90 seconds, polling is likely dead
+      if (hasPendingWork && this.lastUpdateReceived > 0 && timeSinceUpdate > 90_000) {
+        logger.warn('Polling watchdog: no updates received while work pending, restarting polling', {
+          timeSinceUpdateMs: timeSinceUpdate,
+          pendingApprovals: this.pendingApprovalMessages.size,
+          pendingQuestions: this.pendingQuestionButtons.size + this.pendingQuestions.size,
         });
         this.restartPolling();
+        return;
       }
-    }, 60_000);
+
+      // General connectivity check
+      try {
+        await this.bot.getMe();
+        this.consecutiveHealthFailures = 0;
+      } catch (error) {
+        this.consecutiveHealthFailures++;
+
+        if (this.consecutiveHealthFailures >= 3) {
+          logger.warn('Multiple health check failures, recreating bot instance', {
+            failures: this.consecutiveHealthFailures,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          this.consecutiveHealthFailures = 0;
+          await this.recreateBot();
+        } else {
+          logger.warn('Health check failed, restarting polling', {
+            failures: this.consecutiveHealthFailures,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          this.restartPolling();
+        }
+      }
+    }, 30_000); // Check every 30 seconds (was 60s)
 
     // Allow the process to exit even if the interval is active
     if (this.healthCheckInterval.unref) {
@@ -282,8 +354,8 @@ class TelegramProvider implements MessagingProvider {
   }
 
   /**
-   * Restart polling after a failure. Stops existing polling (if any),
-   * then starts fresh with the same robust config.
+   * Restart polling after a failure or stale detection.
+   * Stops existing polling, waits briefly, then starts fresh.
    */
   private restartPolling(): void {
     if (!this.bot) return;
@@ -297,11 +369,15 @@ class TelegramProvider implements MessagingProvider {
         // Ignore errors when stopping — may already be stopped
       }
 
+      // Brief delay to allow TCP connections to fully close
+      await new Promise(resolve => setTimeout(resolve, 1000));
+
       try {
         await bot.startPolling({
           restart: true,
           polling: { params: { timeout: 30 } },
         });
+        this.lastUpdateReceived = Date.now(); // Reset watchdog timer
         logger.info("Polling restarted successfully");
       } catch (error) {
         logger.error("Failed to restart polling", {
@@ -309,6 +385,88 @@ class TelegramProvider implements MessagingProvider {
         });
       }
     })();
+  }
+
+  /**
+   * Nuclear restart: destroy and recreate the entire bot instance.
+   * Used when the HTTP connection pool is broken beyond what restartPolling can fix.
+   */
+  private async recreateBot(): Promise<void> {
+    if (!this.bot) return;
+
+    logger.info('Recreating Telegram bot instance');
+
+    // Stop and remove old bot
+    try {
+      await this.bot.stopPolling();
+    } catch {
+      // Ignore
+    }
+    this.bot.removeAllListeners();
+
+    // Create fresh bot instance
+    this.bot = new TelegramBot(this.botToken, { polling: false });
+
+    // Delete webhook on fresh instance
+    try {
+      await this.bot.deleteWebHook();
+    } catch {
+      // Ignore
+    }
+
+    // Re-register event handlers
+    this.bot.on('message', (msg) => {
+      this.handleMessage(msg).catch((error) => {
+        logger.error('Error handling message', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    });
+
+    this.bot.on('callback_query', (query) => {
+      this.handleCallbackQuery(query).catch((error) => {
+        logger.error('Error handling callback query', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    });
+
+    this.bot.on('polling_error', (error) => {
+      this.pollingErrorCount++;
+      logger.warn('Telegram polling error', {
+        error: error.message,
+        code: (error as NodeJS.ErrnoException).code,
+        consecutiveErrors: this.pollingErrorCount,
+      });
+
+      if ((error as NodeJS.ErrnoException).code === 'ETELEGRAM') {
+        const match = error.message.match(/retry after (\d+)/i);
+        if (match) {
+          logger.warn(`Rate limited, retry after ${parseInt(match[1], 10)} seconds`);
+        }
+      }
+
+      if (this.pollingErrorCount >= this.maxPollingErrors) {
+        logger.warn(`${this.pollingErrorCount} consecutive polling errors, restarting polling`);
+        this.pollingErrorCount = 0;
+        this.restartPolling();
+      }
+    });
+
+    // Start polling on fresh instance
+    try {
+      await this.bot.startPolling({
+        restart: true,
+        polling: { params: { timeout: 30 } },
+      });
+      this.lastUpdateReceived = Date.now();
+      this.pollingErrorCount = 0;
+      logger.info('Bot instance recreated and polling started');
+    } catch (error) {
+      logger.error('Failed to start polling on recreated bot', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   /**
@@ -339,47 +497,90 @@ class TelegramProvider implements MessagingProvider {
       planLength: plan.plan.length,
     });
 
-    try {
-      await this.bot.sendMessage(this.chatId, header, {
-        parse_mode: "Markdown",
-      });
-    } catch (error) {
-      logger.warn("Failed to send plan header with Markdown, retrying without", {
-        error: error instanceof Error ? error.message : String(error),
-      });
-      // Retry without parse_mode
-      await this.bot.sendMessage(this.chatId, `📋 Plan Review\nTicket: ${plan.ticketId} - ${plan.ticketTitle}`);
-    }
-
-    // Send the full plan content, splitting into chunks if needed
-    const planChunks = this.splitMessage(plan.plan, TELEGRAM_MESSAGE_LIMIT - 100);
-    for (const chunk of planChunks) {
+    // Ensure polling is fresh before sending approval request
+    if (this.usePolling && this.bot) {
       try {
-        await this.bot.sendMessage(this.chatId, chunk);
+        await this.bot.stopPolling();
+        await new Promise(resolve => setTimeout(resolve, 500));
+        await this.bot.startPolling({
+          restart: true,
+          polling: { params: { timeout: 30 } },
+        });
+        this.lastUpdateReceived = Date.now();
+        logger.info("Polling refreshed before approval request");
       } catch (error) {
-        logger.warn("Failed to send plan chunk", {
+        logger.warn("Failed to refresh polling before approval", {
           error: error instanceof Error ? error.message : String(error),
-          chunkLength: chunk.length,
         });
       }
     }
 
-    // Send approval inline keyboard
+    // Step 1: Send header
+    logger.info("Sending plan header to Telegram");
     try {
-      const sentMessage = await this.bot.sendMessage(
-        this.chatId,
-        `[${plan.ticketId}] Approve this plan?`,
-        {
-          reply_markup: {
-            inline_keyboard: [
-              [
-                { text: "\u2705 Approve", callback_data: `approve:${plan.planId}` },
-                { text: "\u274C Reject", callback_data: `reject:${plan.planId}` },
-                { text: "\uD83D\uDCAC Feedback", callback_data: `feedback:${plan.planId}` },
+      await withTimeout(
+        this.bot.sendMessage(this.chatId, header, { parse_mode: "Markdown" }),
+        15000,
+        "Send plan header"
+      );
+    } catch (error) {
+      logger.warn("Failed to send plan header with Markdown, retrying as plain text", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      try {
+        await withTimeout(
+          this.bot.sendMessage(this.chatId, `📋 Plan Review\nTicket: ${plan.ticketId} - ${plan.ticketTitle}`),
+          15000,
+          "Send plan header (plain)"
+        );
+      } catch (retryError) {
+        logger.error("Failed to send plan header even as plain text", {
+          error: retryError instanceof Error ? retryError.message : String(retryError),
+        });
+        throw retryError;
+      }
+    }
+
+    // Step 2: Send plan content chunks
+    const planChunks = this.splitMessage(plan.plan, TELEGRAM_MESSAGE_LIMIT - 100);
+    logger.info("Sending plan content", { chunks: planChunks.length });
+    for (let i = 0; i < planChunks.length; i++) {
+      try {
+        await withTimeout(
+          this.bot.sendMessage(this.chatId, planChunks[i]),
+          15000,
+          `Send plan chunk ${i + 1}/${planChunks.length}`
+        );
+      } catch (error) {
+        logger.warn("Failed to send plan chunk", {
+          error: error instanceof Error ? error.message : String(error),
+          chunk: i + 1,
+          total: planChunks.length,
+        });
+      }
+    }
+
+    // Step 3: Send approval inline keyboard
+    logger.info("Sending approval buttons");
+    try {
+      const sentMessage = await withTimeout(
+        this.bot.sendMessage(
+          this.chatId,
+          `[${plan.ticketId}] Approve this plan?`,
+          {
+            reply_markup: {
+              inline_keyboard: [
+                [
+                  { text: "\u2705 Approve", callback_data: `approve:${plan.planId}` },
+                  { text: "\u274C Reject", callback_data: `reject:${plan.planId}` },
+                  { text: "\uD83D\uDCAC Feedback", callback_data: `feedback:${plan.planId}` },
+                ],
               ],
-            ],
-          },
-        }
+            },
+          }
+        ),
+        15000,
+        "Send approval buttons"
       );
 
       // Track the approval message for later editing
@@ -560,8 +761,33 @@ class TelegramProvider implements MessagingProvider {
   ): Promise<void> {
     if (!this.bot || !query.data) return;
 
+    // Validate chat ID — reject events from unauthorized chats
+    const incomingChatId = query.message?.chat?.id;
+    if (incomingChatId?.toString() !== this.chatId) {
+      logger.warn('Rejected callback query from unauthorized chat', {
+        chatId: incomingChatId,
+        expectedChatId: this.chatId,
+        from: query.from?.username || query.from?.first_name || String(query.from?.id),
+      });
+      return;
+    }
+
+    // Deduplicate — skip callbacks we've already processed (replayed after polling restart)
+    if (this.processedCallbacks.has(query.id)) {
+      logger.debug('Skipping duplicate callback query', { queryId: query.id });
+      return;
+    }
+    this.processedCallbacks.add(query.id);
+
+    // Limit memory usage — keep only last 100 callback IDs
+    if (this.processedCallbacks.size > 100) {
+      const entries = [...this.processedCallbacks];
+      this.processedCallbacks = new Set(entries.slice(-50));
+    }
+
     // Reset error count on successful handler execution
     this.pollingErrorCount = 0;
+    this.lastUpdateReceived = Date.now();
 
     const respondedBy =
       query.from.username || query.from.first_name || String(query.from.id);
@@ -687,22 +913,41 @@ class TelegramProvider implements MessagingProvider {
         respondedBy,
       });
 
-      const reasonMsg = await this.bot.sendMessage(
-        this.chatId,
-        `@${escapeMarkdown(respondedBy)} ${prompt}`,
-        {
-          parse_mode: "Markdown",
-          reply_markup: {
-            force_reply: true,
-            selective: true,
-          },
-        }
-      );
+      try {
+        const reasonMsg = await this.bot.sendMessage(
+          this.chatId,
+          `@${respondedBy} ${prompt}`,
+          {
+            reply_markup: {
+              force_reply: true,
+              selective: true,
+            },
+          }
+        );
 
-      this.pendingRejections.set(reasonMsg.message_id, {
-        planId,
-        messageId: reasonMsg.message_id,
-      });
+        this.pendingRejections.set(reasonMsg.message_id, {
+          planId,
+          messageId: reasonMsg.message_id,
+        });
+      } catch (error) {
+        logger.warn("Failed to send feedback prompt, rejecting plan directly", {
+          error: error instanceof Error ? error.message : String(error),
+          planId,
+        });
+        // Fall back to immediate rejection without reason
+        if (this.onApproval) {
+          this.onApproval({
+            planId,
+            approved: false,
+            rejectionReason: `${action} requested by ${respondedBy} (feedback prompt failed)`,
+            respondedBy,
+            respondedAt: new Date(),
+          });
+        }
+        this.pendingApprovalMessages.delete(planId);
+        this.storedPlans.delete(planId);
+        this.awaitingRejectionReason.delete(userId);
+      }
     }
   }
 
@@ -712,8 +957,20 @@ class TelegramProvider implements MessagingProvider {
   private async handleMessage(msg: TelegramBot.Message): Promise<void> {
     if (!this.bot || !msg.text) return;
 
+    // Validate chat ID — reject events from unauthorized chats
+    const incomingChatId = msg.chat?.id?.toString();
+    if (incomingChatId !== this.chatId) {
+      logger.warn('Rejected message from unauthorized chat', {
+        incomingChatId,
+        expectedChatId: this.chatId,
+        from: msg.from?.username || msg.from?.first_name || String(msg.from?.id),
+      });
+      return;
+    }
+
     // Reset error count on successful handler execution
     this.pollingErrorCount = 0;
+    this.lastUpdateReceived = Date.now();
 
     const userId = msg.from?.id;
     const username = msg.from?.username || msg.from?.first_name || String(userId);
