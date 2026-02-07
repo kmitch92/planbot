@@ -109,11 +109,10 @@ class TelegramProvider implements MessagingProvider {
   private pendingRejections: Map<number, PendingRejection> = new Map();
   /** Map of message ID to pending question for tracking question responses */
   private pendingQuestions: Map<number, PendingQuestion> = new Map();
-  /** Map of poll ID to pending poll for tracking poll responses */
-  private pendingPolls: Map<string,
-    | { type: "question"; questionId: string; options: Array<{ label: string; value: string }> }
-    | { type: "approval"; planId: string; options: Array<{ label: string; value: string }> }
-  > = new Map();
+  /** Map of plan ID to approval message ID for inline keyboard editing */
+  private pendingApprovalMessages: Map<string, number> = new Map();
+  /** Map of question ID to pending question button data for callback handling */
+  private pendingQuestionButtons: Map<string, PendingQuestion> = new Map();
   /** Map of plan ID to stored full plan for view requests */
   private storedPlans: Map<string, StoredPlan> = new Map();
   /** Map of user ID to plan ID awaiting rejection reason */
@@ -152,10 +151,10 @@ class TelegramProvider implements MessagingProvider {
         });
       });
 
-      // Register poll answer handler for native polls
-      this.bot.on("poll_answer", (answer) => {
-        this.handlePollAnswer(answer).catch((error) => {
-          logger.error("Error handling poll answer", {
+      // Register callback query handler for inline keyboard buttons
+      this.bot.on("callback_query", (query) => {
+        this.handleCallbackQuery(query).catch((error) => {
+          logger.error("Error handling callback query", {
             error: error instanceof Error ? error.message : String(error),
           });
         });
@@ -205,7 +204,8 @@ class TelegramProvider implements MessagingProvider {
 
     this.pendingRejections.clear();
     this.pendingQuestions.clear();
-    this.pendingPolls.clear();
+    this.pendingApprovalMessages.clear();
+    this.pendingQuestionButtons.clear();
     this.storedPlans.clear();
     this.awaitingRejectionReason.clear();
     this.connected = false;
@@ -221,7 +221,7 @@ class TelegramProvider implements MessagingProvider {
   }
 
   /**
-   * Send a plan for approval with an approval poll.
+   * Send a plan for approval with an inline keyboard.
    */
   async sendPlanForApproval(plan: PlanMessage): Promise<void> {
     if (!this.bot || !this.connected) {
@@ -269,38 +269,34 @@ class TelegramProvider implements MessagingProvider {
       );
     }
 
-    // Send approval poll
-    const approvalOptions = [
-      { label: "Approve", value: "approve" },
-      { label: "Reject", value: "reject" },
-      { label: "Provide Feedback", value: "feedback" },
-    ];
-
+    // Send approval inline keyboard
     try {
-      const sentPoll = await this.bot.sendPoll(
+      const sentMessage = await this.bot.sendMessage(
         this.chatId,
-        `[${plan.ticketId}] Approve this plan?`,
-        approvalOptions.map((o) => o.label),
+        `*[${escapeMarkdown(plan.ticketId)}] Approve this plan?*`,
         {
-          is_anonymous: false,
-          allows_multiple_answers: false,
+          parse_mode: "Markdown",
+          reply_markup: {
+            inline_keyboard: [
+              [
+                { text: "\u2705 Approve", callback_data: `approve:${plan.planId}` },
+                { text: "\u274C Reject", callback_data: `reject:${plan.planId}` },
+                { text: "\uD83D\uDCAC Feedback", callback_data: `feedback:${plan.planId}` },
+              ],
+            ],
+          },
         }
       );
 
-      if (sentPoll.poll) {
-        this.pendingPolls.set(sentPoll.poll.id, {
-          type: "approval",
-          planId: plan.planId,
-          options: approvalOptions,
-        });
-      }
+      // Track the approval message for later editing
+      this.pendingApprovalMessages.set(plan.planId, sentMessage.message_id);
 
-      logger.debug("Sent plan for approval with poll", {
+      logger.debug("Sent plan for approval with inline keyboard", {
         planId: plan.planId,
-        pollId: sentPoll.poll?.id,
+        messageId: sentMessage.message_id,
       });
     } catch (error) {
-      logger.error("Failed to send plan approval poll", {
+      logger.error("Failed to send plan approval message", {
         error: error instanceof Error ? error.message : String(error),
         planId: plan.planId,
       });
@@ -326,39 +322,31 @@ class TelegramProvider implements MessagingProvider {
 
     try {
       if (question.options && question.options.length > 0) {
-        // Send ticket context before the poll
-        const contextMessage = [
-          "❓ *Question*",
-          `*Ticket:* ${escapeMarkdown(question.ticketId)} \\- ${escapeMarkdown(question.ticketTitle)}`,
-        ].join("\n");
+        // Build inline keyboard rows (one button per option)
+        const keyboard = question.options.map((o) => [
+          { text: o.label, callback_data: `answer:${question.questionId}:${o.value}` },
+        ]);
 
-        await this.bot.sendMessage(this.chatId, contextMessage, {
-          parse_mode: "Markdown",
-        });
-
-        const optionLabels = question.options.map((o) => o.label);
-
-        const sentMessage = await this.bot.sendPoll(
+        const sentMessage = await this.bot.sendMessage(
           this.chatId,
-          `[${question.ticketId}] ${question.question}`,
-          optionLabels,
+          `\u2753 *Question*\n*Ticket:* ${escapeMarkdown(question.ticketId)} \\- ${escapeMarkdown(question.ticketTitle)}\n\n${escapeMarkdown(question.question)}`,
           {
-            is_anonymous: false,
-            allows_multiple_answers: false,
+            parse_mode: "Markdown",
+            reply_markup: {
+              inline_keyboard: keyboard,
+            },
           }
         );
 
-        if (sentMessage.poll) {
-          this.pendingPolls.set(sentMessage.poll.id, {
-            type: "question",
-            questionId: question.questionId,
-            options: question.options,
-          });
-        }
-
-        logger.debug("Sent question as poll", {
+        // Track for callback handling
+        this.pendingQuestionButtons.set(question.questionId, {
           questionId: question.questionId,
-          pollId: sentMessage.poll?.id,
+          messageId: sentMessage.message_id,
+          options: question.options,
+        });
+
+        logger.debug("Sent question as inline keyboard", {
+          questionId: question.questionId,
           messageId: sentMessage.message_id,
         });
       } else {
@@ -436,110 +424,141 @@ class TelegramProvider implements MessagingProvider {
   }
 
   /**
-   * Handle poll answer from native Telegram poll (questions and approvals).
+   * Handle callback query from inline keyboard buttons (approvals and questions).
    */
-  private async handlePollAnswer(
-    pollAnswer: TelegramBot.PollAnswer
+  private async handleCallbackQuery(
+    query: TelegramBot.CallbackQuery
   ): Promise<void> {
-    const pollId = pollAnswer.poll_id;
-    const pending = this.pendingPolls.get(pollId);
+    if (!this.bot || !query.data) return;
 
-    if (!pending) {
-      logger.debug("Received poll answer for unknown poll", { pollId });
-      return;
-    }
+    const respondedBy =
+      query.from.username || query.from.first_name || String(query.from.id);
+    const [action, ...rest] = query.data.split(":");
 
-    const selectedIndex = pollAnswer.option_ids[0];
-    if (selectedIndex === undefined || selectedIndex >= pending.options.length) {
-      logger.warn("Invalid poll answer index", { pollId, selectedIndex });
-      return;
-    }
+    // Acknowledge the callback to remove loading state
+    await this.bot.answerCallbackQuery(query.id);
 
-    const selectedOption = pending.options[selectedIndex];
-    const respondedBy = pollAnswer.user.username || pollAnswer.user.first_name || String(pollAnswer.user.id);
+    // Handle question answer callbacks: answer:questionId:value
+    if (action === "answer") {
+      const questionId = rest[0];
+      const answerValue = rest.slice(1).join(":"); // value may contain colons
 
-    this.pendingPolls.delete(pollId);
+      if (!questionId) return;
 
-    if (pending.type === "question") {
-      // Question poll answer
-      if (this.bot) {
-        await this.bot.sendMessage(
-          this.chatId,
-          `✅ Answer recorded: "${escapeMarkdown(selectedOption.label)}"`,
-          { parse_mode: "Markdown" }
-        );
+      const pending = this.pendingQuestionButtons.get(questionId);
+      const selectedOption = pending?.options?.find(
+        (o) => o.value === answerValue
+      );
+      const displayLabel = selectedOption?.label || answerValue;
+
+      // Edit original message to show answer
+      if (pending) {
+        try {
+          await this.bot.editMessageText(
+            `\u2705 Answer recorded: "${escapeMarkdown(displayLabel)}"`,
+            {
+              chat_id: this.chatId,
+              message_id: pending.messageId,
+              parse_mode: "Markdown",
+            }
+          );
+        } catch (error) {
+          logger.debug("Could not edit question message", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+        this.pendingQuestionButtons.delete(questionId);
       }
 
       if (this.onQuestionResponse) {
         this.onQuestionResponse({
-          questionId: pending.questionId,
-          answer: selectedOption.value,
+          questionId,
+          answer: answerValue,
           respondedBy,
           respondedAt: new Date(),
         });
       }
 
-      logger.debug("Poll answer received", {
-        questionId: pending.questionId,
-        answer: selectedOption.value,
+      logger.debug("Question answered via inline button", {
+        questionId,
+        answer: answerValue,
         respondedBy,
       });
-    } else if (pending.type === "approval") {
-      // Approval poll answer
-      if (selectedOption.value === "approve") {
-        if (this.bot) {
-          await this.bot.sendMessage(
-            this.chatId,
-            `✅ *Plan Approved* by @${escapeMarkdown(respondedBy)}`,
-            { parse_mode: "Markdown" }
-          );
-        }
+      return;
+    }
 
-        if (this.onApproval) {
-          this.onApproval({
-            planId: pending.planId,
-            approved: true,
-            respondedBy,
-            respondedAt: new Date(),
+    // Handle approval callbacks: approve:planId, reject:planId, feedback:planId
+    const planId = rest[0];
+    if (!planId) return;
+
+    if (action === "approve") {
+      // Edit the original message to show approval
+      const messageId = this.pendingApprovalMessages.get(planId);
+      if (messageId) {
+        try {
+          await this.bot.editMessageText(
+            `\u2705 *Plan Approved* by @${escapeMarkdown(respondedBy)}`,
+            {
+              chat_id: this.chatId,
+              message_id: messageId,
+              parse_mode: "Markdown",
+            }
+          );
+        } catch (error) {
+          logger.debug("Could not edit approval message", {
+            error: error instanceof Error ? error.message : String(error),
           });
         }
+      }
 
-        this.storedPlans.delete(pending.planId);
-        logger.debug("Plan approved via poll", { planId: pending.planId, respondedBy });
-      } else {
-        // Reject or Provide Feedback - ask for reason via reply
-        const userId = pollAnswer.user.id;
-        this.awaitingRejectionReason.set(userId, pending.planId);
+      this.pendingApprovalMessages.delete(planId);
+      this.storedPlans.delete(planId);
 
-        const prompt = selectedOption.value === "reject"
+      if (this.onApproval) {
+        this.onApproval({
+          planId,
+          approved: true,
+          respondedBy,
+          respondedAt: new Date(),
+        });
+      }
+
+      logger.debug("Plan approved via inline button", {
+        planId,
+        respondedBy,
+      });
+    } else if (action === "reject" || action === "feedback") {
+      // Ask for reason via force_reply
+      const userId = query.from.id;
+      this.awaitingRejectionReason.set(userId, planId);
+
+      const prompt =
+        action === "reject"
           ? "Please reply with the rejection reason:"
           : "Please reply with your feedback:";
 
-        if (this.bot) {
-          const reasonMsg = await this.bot.sendMessage(
-            this.chatId,
-            `@${escapeMarkdown(respondedBy)} ${prompt}`,
-            {
-              parse_mode: "Markdown",
-              reply_markup: {
-                force_reply: true,
-                selective: true,
-              },
-            }
-          );
-
-          this.pendingRejections.set(reasonMsg.message_id, {
-            planId: pending.planId,
-            messageId: reasonMsg.message_id,
-          });
+      const reasonMsg = await this.bot.sendMessage(
+        this.chatId,
+        `@${escapeMarkdown(respondedBy)} ${prompt}`,
+        {
+          parse_mode: "Markdown",
+          reply_markup: {
+            force_reply: true,
+            selective: true,
+          },
         }
+      );
 
-        logger.debug("Awaiting rejection/feedback reason", {
-          planId: pending.planId,
-          action: selectedOption.value,
-          respondedBy,
-        });
-      }
+      this.pendingRejections.set(reasonMsg.message_id, {
+        planId,
+        messageId: reasonMsg.message_id,
+      });
+
+      logger.debug("Awaiting rejection/feedback reason", {
+        planId,
+        action,
+        respondedBy,
+      });
     }
   }
 
