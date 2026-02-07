@@ -246,7 +246,7 @@ export function createStartCommand(): Command {
 
         // Create terminal provider for approvals and questions
         const terminal = createTerminalProvider({
-          showFullPlan: false,
+          showFullPlan: true,
           colors: true,
         });
 
@@ -351,10 +351,7 @@ function setupEventHandlers(
   orchestrator.on('ticket:plan-generated', (ticket, plan) => {
     console.log(chalk.green(`\n>>> Plan generated for: ${ticket.title}`));
     console.log(chalk.dim('─'.repeat(60)));
-    console.log(plan.slice(0, 500));
-    if (plan.length > 500) {
-      console.log(chalk.dim(`\n... (${plan.length - 500} more characters)`));
-    }
+    console.log(plan);
     console.log(chalk.dim('─'.repeat(60)));
   });
 
