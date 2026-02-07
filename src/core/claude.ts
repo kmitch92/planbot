@@ -113,6 +113,7 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
     return new Promise((resolve) => {
       const args = [
         '--print',
+        '--input-format', 'stream-json',
         '--output-format', 'stream-json',
         '--permission-mode', 'plan',
       ];
@@ -131,6 +132,7 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
       let errorMessage: string | undefined;
       let timedOut = false;
       let lineBuffer = '';
+      let stderrOutput = '';
 
       const timer = setTimeout(() => {
         timedOut = true;
@@ -177,8 +179,9 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
 
       proc.stderr?.on('data', (chunk: Buffer) => {
         const text = chunk.toString();
+        stderrOutput += text;
         onOutput?.(text);
-        logger.debug('Claude stderr during plan generation', { text: text.slice(0, 200) });
+        logger.warn('Claude stderr', { text: text.trim().slice(0, 500) });
       });
 
       proc.on('error', (err) => {
@@ -244,7 +247,7 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
         if (code !== 0) {
           resolve({
             success: false,
-            error: `Claude exited with code ${code}`,
+            error: stderrOutput.trim() || `Claude exited with code ${code}`,
             costUsd,
           });
           return;
@@ -271,8 +274,15 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
         });
       });
 
-      // Write prompt to stdin
-      proc.stdin?.write(prompt);
+      // Write prompt as stream-json input
+      const initialMessage = {
+        type: 'user',
+        message: {
+          role: 'user',
+          content: prompt,
+        },
+      };
+      proc.stdin?.write(JSON.stringify(initialMessage) + '\n');
       proc.stdin?.end();
     });
   }
