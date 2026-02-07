@@ -54,7 +54,7 @@ export interface ExecutionResult {
 
 export interface ClaudeWrapper {
   /** Generate a plan in plan mode (uses --permission-mode plan) */
-  generatePlan(prompt: string, options?: ClaudeOptions): Promise<PlanResult>;
+  generatePlan(prompt: string, options?: ClaudeOptions, onOutput?: (text: string) => void): Promise<PlanResult>;
 
   /** Execute with streaming, handling questions */
   execute(
@@ -105,7 +105,7 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
   /**
    * Generate a plan using Claude's plan permission mode
    */
-  async generatePlan(prompt: string, options: ClaudeOptions = {}): Promise<PlanResult> {
+  async generatePlan(prompt: string, options: ClaudeOptions = {}, onOutput?: (text: string) => void): Promise<PlanResult> {
     const { model, timeout = 300000, cwd } = options;
 
     logger.debug('Generating plan with Claude', { model, timeout });
@@ -136,11 +136,15 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
       }, timeout);
 
       proc.stdout?.on('data', (chunk: Buffer) => {
-        stdout += chunk.toString();
+        const text = chunk.toString();
+        stdout += text;
+        onOutput?.(text);
       });
 
       proc.stderr?.on('data', (chunk: Buffer) => {
-        stderr += chunk.toString();
+        const text = chunk.toString();
+        stderr += text;
+        onOutput?.(text);
       });
 
       proc.on('error', (err) => {

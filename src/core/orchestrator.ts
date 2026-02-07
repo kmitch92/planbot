@@ -584,7 +584,7 @@ class OrchestratorImpl
       model: config.model,
       timeout: config.timeouts.planGeneration,
       cwd: this.projectRoot,
-    });
+    }, (text) => this.handleOutput(ticket, text));
 
     if (!result.success || !result.plan) {
       throw new Error(result.error ?? "Plan generation failed");

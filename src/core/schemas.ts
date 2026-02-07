@@ -75,8 +75,8 @@ export const WebhookConfigSchema = z.object({
 // =============================================================================
 
 export const TimeoutsSchema = z.object({
-  /** Plan generation timeout in milliseconds (default: 5 minutes) */
-  planGeneration: z.number().int().positive().default(300000),
+  /** Plan generation timeout in milliseconds (default: 15 minutes) */
+  planGeneration: z.number().int().positive().default(900000),
   /** Execution timeout in milliseconds (default: 30 minutes) */
   execution: z.number().int().positive().default(1800000),
   /** Approval timeout in milliseconds (default: 24 hours) */
