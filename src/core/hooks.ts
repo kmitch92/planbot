@@ -47,6 +47,15 @@ export interface HookResult {
 }
 
 // =============================================================================
+// Hook Execute Options
+// =============================================================================
+
+export interface HookExecuteOptions {
+  /** Enable shell hook execution. Shell hooks are DISABLED by default. */
+  allowShellHooks?: boolean;
+}
+
+// =============================================================================
 // Hook Executor Interface
 // =============================================================================
 
@@ -55,29 +64,33 @@ export interface HookExecutor {
    * Execute a single hook action
    * @param action - The hook action to execute
    * @param context - Context data to inject
+   * @param options - Execution options (e.g. allowShellHooks)
    * @returns Promise resolving to hook result
    */
-  executeAction(action: HookAction, context: HookContext): Promise<HookResult>;
+  executeAction(action: HookAction, context: HookContext, options?: HookExecuteOptions): Promise<HookResult>;
 
   /**
    * Execute all actions in a hook array sequentially
    * @param hook - Array of hook actions
    * @param context - Context data to inject
+   * @param options - Execution options (e.g. allowShellHooks)
    * @returns Promise resolving to array of results
    */
-  executeHook(hook: Hook, context: HookContext): Promise<HookResult[]>;
+  executeHook(hook: Hook, context: HookContext, options?: HookExecuteOptions): Promise<HookResult[]>;
 
   /**
    * Execute a named hook from hooks configuration
    * @param hooks - Hooks configuration object
    * @param name - Name of the hook to execute
    * @param context - Context data to inject
+   * @param options - Execution options (e.g. allowShellHooks)
    * @returns Promise resolving to array of results
    */
   executeNamed(
     hooks: Hooks | undefined,
     name: keyof Hooks,
-    context: HookContext
+    context: HookContext,
+    options?: HookExecuteOptions
   ): Promise<HookResult[]>;
 
   /**
@@ -274,9 +287,20 @@ function createHookExecutor(): HookExecutor {
   return {
     async executeAction(
       action: HookAction,
-      context: HookContext
+      context: HookContext,
+      options?: HookExecuteOptions
     ): Promise<HookResult> {
       if (action.type === "shell") {
+        if (!options?.allowShellHooks) {
+          logger.warn("Shell hook blocked — shell hooks are disabled by default", {
+            command: action.command,
+          });
+          return {
+            success: false,
+            error: "Shell hooks are disabled. Pass --allow-shell-hooks to enable.",
+          };
+        }
+
         logger.debug("Executing shell hook", { command: action.command });
 
         const env = buildEnvVars("hook", context);
@@ -308,11 +332,11 @@ function createHookExecutor(): HookExecutor {
       };
     },
 
-    async executeHook(hook: Hook, context: HookContext): Promise<HookResult[]> {
+    async executeHook(hook: Hook, context: HookContext, options?: HookExecuteOptions): Promise<HookResult[]> {
       const results: HookResult[] = [];
 
       for (const action of hook) {
-        const result = await this.executeAction(action, context);
+        const result = await this.executeAction(action, context, options);
         results.push(result);
 
         // Stop on first failure
@@ -331,7 +355,8 @@ function createHookExecutor(): HookExecutor {
     async executeNamed(
       hooks: Hooks | undefined,
       name: keyof Hooks,
-      context: HookContext
+      context: HookContext,
+      options?: HookExecuteOptions
     ): Promise<HookResult[]> {
       if (!hooks) {
         return [];
@@ -348,7 +373,7 @@ function createHookExecutor(): HookExecutor {
       const contextWithEvent = { ...context };
 
       // Build environment with proper event name
-      const results = await this.executeHook(hook, contextWithEvent);
+      const results = await this.executeHook(hook, contextWithEvent, options);
 
       const failed = results.filter((r) => !r.success);
       if (failed.length > 0) {

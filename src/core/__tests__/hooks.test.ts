@@ -49,7 +49,7 @@ describe("Shell Hook Execution", () => {
     const action = createShellAction('echo "success"');
     const context = createContext();
 
-    const result = await hookExecutor.executeAction(action, context);
+    const result = await hookExecutor.executeAction(action, context, { allowShellHooks: true });
 
     expect(result.success).toBe(true);
     expect(result.exitCode).toBe(0);
@@ -59,7 +59,7 @@ describe("Shell Hook Execution", () => {
     const action = createShellAction('echo "hello world"');
     const context = createContext();
 
-    const result = await hookExecutor.executeAction(action, context);
+    const result = await hookExecutor.executeAction(action, context, { allowShellHooks: true });
 
     expect(result.success).toBe(true);
     expect(result.output).toContain("hello world");
@@ -69,7 +69,7 @@ describe("Shell Hook Execution", () => {
     const action = createShellAction("exit 1");
     const context = createContext();
 
-    const result = await hookExecutor.executeAction(action, context);
+    const result = await hookExecutor.executeAction(action, context, { allowShellHooks: true });
 
     expect(result.success).toBe(false);
     expect(result.exitCode).toBe(1);
@@ -79,7 +79,7 @@ describe("Shell Hook Execution", () => {
     const action = createShellAction("exit 42");
     const context = createContext();
 
-    const result = await hookExecutor.executeAction(action, context);
+    const result = await hookExecutor.executeAction(action, context, { allowShellHooks: true });
 
     expect(result.success).toBe(false);
     expect(result.exitCode).toBe(42);
@@ -100,7 +100,8 @@ describe("Shell Hook Execution", () => {
     // that exits quickly and verify the mechanism works.
     const result = await hookExecutor.executeAction(
       createShellAction("sleep 0.01"),
-      context
+      context,
+      { allowShellHooks: true }
     );
 
     expect(result.success).toBe(true);
@@ -110,7 +111,7 @@ describe("Shell Hook Execution", () => {
     const action = createShellAction('echo "$PLANBOT_EVENT"');
     const context = createContext();
 
-    const result = await hookExecutor.executeAction(action, context);
+    const result = await hookExecutor.executeAction(action, context, { allowShellHooks: true });
 
     expect(result.success).toBe(true);
     expect(result.output).toContain("hook");
@@ -120,7 +121,7 @@ describe("Shell Hook Execution", () => {
     const action = createShellAction('echo "$PLANBOT_TICKET_ID"');
     const context = createContext({ ticketId: "CUSTOM-123" });
 
-    const result = await hookExecutor.executeAction(action, context);
+    const result = await hookExecutor.executeAction(action, context, { allowShellHooks: true });
 
     expect(result.success).toBe(true);
     expect(result.output).toContain("CUSTOM-123");
@@ -130,7 +131,7 @@ describe("Shell Hook Execution", () => {
     const action = createShellAction('echo "$PLANBOT_TICKET_TITLE"');
     const context = createContext({ ticketTitle: "My Custom Title" });
 
-    const result = await hookExecutor.executeAction(action, context);
+    const result = await hookExecutor.executeAction(action, context, { allowShellHooks: true });
 
     expect(result.success).toBe(true);
     expect(result.output).toContain("My Custom Title");
@@ -194,7 +195,7 @@ describe("Hook Array Execution", () => {
     ];
     const context = createContext();
 
-    const results = await hookExecutor.executeHook(hook, context);
+    const results = await hookExecutor.executeHook(hook, context, { allowShellHooks: true });
 
     expect(results).toHaveLength(3);
     expect(results[0]?.output).toContain("first");
@@ -210,7 +211,7 @@ describe("Hook Array Execution", () => {
     ];
     const context = createContext();
 
-    const results = await hookExecutor.executeHook(hook, context);
+    const results = await hookExecutor.executeHook(hook, context, { allowShellHooks: true });
 
     expect(results).toHaveLength(2);
     expect(results[0]?.success).toBe(true);
@@ -226,7 +227,7 @@ describe("Hook Array Execution", () => {
     ];
     const context = createContext();
 
-    const results = await hookExecutor.executeHook(hook, context);
+    const results = await hookExecutor.executeHook(hook, context, { allowShellHooks: true });
 
     expect(results).toHaveLength(3);
     expect(results[0]?.success).toBe(true);
@@ -244,7 +245,7 @@ describe("Hook Array Execution", () => {
     ];
     const context = createContext();
 
-    const results = await hookExecutor.executeHook(hook, context);
+    const results = await hookExecutor.executeHook(hook, context, { allowShellHooks: true });
 
     expect(results).toHaveLength(4);
     expect(results.every((r) => r.success)).toBe(true);
@@ -276,7 +277,7 @@ describe("Named Hook Execution", () => {
     };
     const context = createContext();
 
-    const results = await hookExecutor.executeNamed(hooks, "beforeAll", context);
+    const results = await hookExecutor.executeNamed(hooks, "beforeAll", context, { allowShellHooks: true });
 
     expect(results).toHaveLength(1);
     expect(results[0]?.output).toContain("before all");
@@ -310,7 +311,7 @@ describe("Named Hook Execution", () => {
       ticketStatus: "completed",
     });
 
-    const results = await hookExecutor.executeNamed(hooks, "onComplete", context);
+    const results = await hookExecutor.executeNamed(hooks, "onComplete", context, { allowShellHooks: true });
 
     expect(results).toHaveLength(1);
     expect(results[0]?.output).toContain("CTX-999");
@@ -420,7 +421,7 @@ describe("Environment Variable Injection", () => {
     const action = createShellAction('echo "$PLANBOT_PLAN_PATH"');
     const context = createContext({ planPath: "/tmp/plan.md" });
 
-    const result = await hookExecutor.executeAction(action, context);
+    const result = await hookExecutor.executeAction(action, context, { allowShellHooks: true });
 
     expect(result.success).toBe(true);
     expect(result.output).toContain("/tmp/plan.md");
@@ -430,7 +431,7 @@ describe("Environment Variable Injection", () => {
     const action = createShellAction('echo "$PLANBOT_ERROR"');
     const context = createContext({ error: "Something went wrong" });
 
-    const result = await hookExecutor.executeAction(action, context);
+    const result = await hookExecutor.executeAction(action, context, { allowShellHooks: true });
 
     expect(result.success).toBe(true);
     expect(result.output).toContain("Something went wrong");
@@ -440,7 +441,7 @@ describe("Environment Variable Injection", () => {
     const action = createShellAction('echo "$PLANBOT_QUESTION"');
     const context = createContext({ question: "What should I do?" });
 
-    const result = await hookExecutor.executeAction(action, context);
+    const result = await hookExecutor.executeAction(action, context, { allowShellHooks: true });
 
     expect(result.success).toBe(true);
     expect(result.output).toContain("What should I do?");
@@ -450,7 +451,7 @@ describe("Environment Variable Injection", () => {
     const action = createShellAction('echo "$PLANBOT_QUESTION_ID"');
     const context = createContext({ questionId: "Q-12345" });
 
-    const result = await hookExecutor.executeAction(action, context);
+    const result = await hookExecutor.executeAction(action, context, { allowShellHooks: true });
 
     expect(result.success).toBe(true);
     expect(result.output).toContain("Q-12345");
@@ -460,7 +461,7 @@ describe("Environment Variable Injection", () => {
     const action = createShellAction('echo "$PLANBOT_TICKET_STATUS"');
     const context = createContext({ ticketStatus: "executing" });
 
-    const result = await hookExecutor.executeAction(action, context);
+    const result = await hookExecutor.executeAction(action, context, { allowShellHooks: true });
 
     expect(result.success).toBe(true);
     expect(result.output).toContain("executing");

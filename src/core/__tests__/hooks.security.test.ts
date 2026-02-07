@@ -23,7 +23,7 @@ describe("Hook Executor Security - Environment Variable Sanitization", () => {
 
     // Null byte makes ticketId fail regex validation, so it's rejected
     await expect(
-      hookExecutor.executeAction(action, context)
+      hookExecutor.executeAction(action, context, { allowShellHooks: true })
     ).rejects.toThrow(/Invalid ticket ID.*Only alphanumeric/);
   });
 
@@ -33,7 +33,7 @@ describe("Hook Executor Security - Environment Variable Sanitization", () => {
       ticketTitle: "Title\x01\x02\x03",
     };
 
-    const result = await hookExecutor.executeAction(action, context);
+    const result = await hookExecutor.executeAction(action, context, { allowShellHooks: true });
 
     expect(result.success).toBe(true);
     expect(result.output).not.toMatch(/[\x00-\x08\x0b\x0c\x0e-\x1f]/);
@@ -45,7 +45,7 @@ describe("Hook Executor Security - Environment Variable Sanitization", () => {
       question: "Question with\nnewline and\ttab",
     };
 
-    const result = await hookExecutor.executeAction(action, context);
+    const result = await hookExecutor.executeAction(action, context, { allowShellHooks: true });
 
     expect(result.success).toBe(true);
     // Newlines and tabs should be preserved
@@ -59,7 +59,7 @@ describe("Hook Executor Security - Environment Variable Sanitization", () => {
       error: "\x1b[31mRed error\x1b[0m",
     };
 
-    const result = await hookExecutor.executeAction(action, context);
+    const result = await hookExecutor.executeAction(action, context, { allowShellHooks: true });
 
     expect(result.success).toBe(true);
     expect(result.output).not.toContain("\x1b");
@@ -74,7 +74,7 @@ describe("Hook Executor Security - Environment Variable Sanitization", () => {
 
     // Should fail validation before execution
     await expect(
-      hookExecutor.executeAction(action, context)
+      hookExecutor.executeAction(action, context, { allowShellHooks: true })
     ).rejects.toThrow(/Invalid ticket ID.*Path traversal not allowed/);
   });
 
@@ -84,7 +84,7 @@ describe("Hook Executor Security - Environment Variable Sanitization", () => {
       ticketId: "TICKET-123_valid",
     };
 
-    const result = await hookExecutor.executeAction(action, context);
+    const result = await hookExecutor.executeAction(action, context, { allowShellHooks: true });
 
     expect(result.success).toBe(true);
     expect(result.output).toContain("TICKET-123_valid");
