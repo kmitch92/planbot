@@ -426,6 +426,7 @@ function setupEventHandlers(
     console.log(chalk.blue.bold(`\n>>> Starting: ${ticket.title}`));
     console.log(chalk.dim(`    ID: ${ticket.id}`));
     logger.setContext({ ticketId: ticket.id, phase: 'starting' });
+    startProgressTracker();
   });
 
   orchestrator.on('ticket:plan-generated', (ticket, plan) => {
@@ -451,7 +452,6 @@ function setupEventHandlers(
     if (dryRun) {
       console.log(chalk.yellow('    (Dry run - no actual changes)'));
     }
-    startProgressTracker();
   });
 
   orchestrator.on('ticket:output', (_ticket, text) => {
@@ -481,6 +481,7 @@ function setupEventHandlers(
   });
 
   orchestrator.on('ticket:skipped', (ticket) => {
+    stopProgressTracker();
     console.log(chalk.yellow(`\n>>> Skipped: ${ticket.title}`));
   });
 
