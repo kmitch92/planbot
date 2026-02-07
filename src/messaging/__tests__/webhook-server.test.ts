@@ -61,6 +61,7 @@ describe("Server Lifecycle", () => {
     server = createWebhookServer({
       port,
       path: "/webhook",
+      insecure: true,
     });
   });
 
@@ -111,6 +112,7 @@ describe("Health Endpoint", () => {
     server = createWebhookServer({
       port,
       path: "/webhook",
+      insecure: true,
     });
     await server.start();
     baseUrl = server.getUrl();
@@ -151,6 +153,7 @@ describe("Approval Endpoint", () => {
     server = createWebhookServer({
       port,
       path: "/webhook",
+      insecure: true,
     });
     await server.start();
     baseUrl = server.getUrl();
@@ -264,6 +267,7 @@ describe("Question Response Endpoint", () => {
     server = createWebhookServer({
       port,
       path: "/webhook",
+      insecure: true,
     });
     await server.start();
     baseUrl = server.getUrl();
@@ -464,6 +468,7 @@ describe("Edge Cases and Error Handling", () => {
     server = createWebhookServer({
       port,
       path: "/webhook",
+      insecure: true,
     });
     await server.start();
     baseUrl = server.getUrl();

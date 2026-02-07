@@ -68,7 +68,7 @@ describe('Webhook Server - Status Without Secret', () => {
   const path = '/test/webhook';
 
   beforeEach(async () => {
-    server = createWebhookServer({ port, path }); // No secret
+    server = createWebhookServer({ port, path, insecure: true }); // No secret, insecure mode
     await server.start();
   });
 
