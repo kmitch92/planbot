@@ -10,62 +10,58 @@ import { logger } from '../../utils/logger.js';
 // Templates
 // =============================================================================
 
-const BASIC_TEMPLATE = `# Planbot Tickets Configuration
-# See https://github.com/your-repo/planbot for documentation
-
-config:
-  model: sonnet
-  maxBudgetPerTicket: 10
-  maxRetries: 3
-  continueOnError: false
-  autoApprove: false
+const BASIC_TEMPLATE = `# Planbot Tickets
+# Run \`planbot start --help\` for CLI options
 
 tickets:
-  - id: example-001
-    title: Example Ticket
-    description: |
+  - id: example-001                # Unique identifier (required)
+    title: Example Ticket          # Short title, max 200 chars (required)
+    description: |                 # Detailed work description (required)
       Describe what needs to be done here.
-
-      Be specific and include:
-      - What files to modify
-      - Expected behavior
-      - Any constraints
-    priority: 1
-    acceptanceCriteria:
+      Be specific about files, expected behavior, and constraints.
+    priority: 1                    # Higher = more urgent (default: 0)
+    planMode: false                # Skip plan generation, execute directly (default: true)
+    acceptanceCriteria:            # Completion criteria (optional)
       - Criterion 1
       - Criterion 2
+    # dependencies: [other-id]    # IDs of tickets that must complete first
+    # metadata:                    # Arbitrary key-value data
+    #   estimate: 2h
 `;
 
-const ADVANCED_TEMPLATE = `# Planbot Tickets Configuration (Advanced)
-# See https://github.com/your-repo/planbot for documentation
+const ADVANCED_TEMPLATE = `# Planbot Tickets
+# Run \`planbot start --help\` for CLI options
 
-config:
-  model: sonnet
-  maxBudgetPerTicket: 10
-  maxRetries: 3
-  continueOnError: false
-  autoApprove: false
-  skipPermissions: false
-
-  # Optional: Configure messaging provider for approvals
-  # messaging:
-  #   provider: slack
-  #   botToken: \${SLACK_BOT_TOKEN}
-  #   appToken: \${SLACK_APP_TOKEN}
-  #   channel: planbot-approvals
-
-  webhook:
-    enabled: false
-    port: 3847
-    path: /planbot/webhook
-
-  timeouts:
-    planGeneration: 300000   # 5 minutes
-    execution: 1800000       # 30 minutes
-    approval: 86400000       # 24 hours
-    question: 3600000        # 1 hour
-
-# Global hooks run for all tickets
+# =============================================================================
+# Hooks — run commands or prompts at lifecycle events
+# =============================================================================
+#
+# Hook types:
+#   shell  — runs a shell command    { type: shell, command: "..." }
+#   prompt — sends prompt to Claude  { type: prompt, prompt: "..." }
+#
+# Hook events:
+#   beforeAll      — once before processing any tickets
+#   afterAll       — once after all tickets are processed
+#   beforeEach     — before each ticket starts
+#   afterEach      — after each ticket completes (success, failure, or skip)
+#   onPlanGenerated — after plan generation, before approval
+#   onApproval     — when a plan is approved
+#   onComplete     — when a ticket completes successfully
+#   onError        — when an error occurs during processing
+#   onQuestion     — when Claude asks a question requiring input
+#
+# Environment variables available in shell hooks:
+#   PLANBOT_EVENT          — hook event name (e.g. "beforeEach")
+#   PLANBOT_TICKET_ID      — current ticket ID
+#   PLANBOT_TICKET_TITLE   — current ticket title
+#   PLANBOT_TICKET_STATUS  — current ticket status
+#   PLANBOT_PLAN_PATH      — path to plan file (onPlanGenerated)
+#   PLANBOT_PLAN           — plan content (onPlanGenerated, onApproval)
+#   PLANBOT_ERROR          — error message (onError)
+#   PLANBOT_QUESTION       — question text (onQuestion)
+#   PLANBOT_QUESTION_ID    — question ID (onQuestion)
+#
 hooks:
   beforeAll:
     - type: shell
@@ -83,14 +79,31 @@ hooks:
     - type: shell
       command: echo "Ticket \${PLANBOT_TICKET_ID} finished with status \${PLANBOT_TICKET_STATUS}"
 
-  # onError:
-  #   - type: shell
-  #     command: notify-failure.sh
-
   # onPlanGenerated:
   #   - type: prompt
-  #     prompt: Review the plan and identify any potential issues
+  #     prompt: Review the generated plan and identify any risks or missing steps
+  #   - type: shell
+  #     command: cat "\${PLANBOT_PLAN_PATH}"
 
+  # onError:
+  #   - type: shell
+  #     command: echo "ERROR in \${PLANBOT_TICKET_ID}: \${PLANBOT_ERROR}"
+
+  # onComplete:
+  #   - type: shell
+  #     command: echo "\${PLANBOT_TICKET_ID} completed successfully"
+
+# =============================================================================
+# Tickets
+# =============================================================================
+#
+# Required fields: id, title, description
+# Optional fields: priority, planMode, acceptanceCriteria, dependencies, hooks, metadata
+#
+# planMode (default: true):
+#   true  — generate a plan, wait for approval, then execute
+#   false — skip planning and approval, execute directly from description
+#
 tickets:
   - id: auth-001
     title: Implement User Authentication
@@ -108,11 +121,6 @@ tickets:
       - Users can login and receive tokens
       - Protected routes reject invalid tokens
       - Refresh tokens work correctly
-    # Ticket-specific hook overrides
-    # hooks:
-    #   afterEach:
-    #     - type: shell
-    #       command: npm run test:auth
 
   - id: auth-002
     title: Add Password Reset Flow
@@ -124,7 +132,7 @@ tickets:
       - Time-limited reset tokens
       - Rate limiting on reset requests
     priority: 5
-    dependencies:
+    dependencies:                  # Waits for auth-001 to complete first
       - auth-001
     acceptanceCriteria:
       - Users can request password reset
@@ -137,6 +145,7 @@ tickets:
     description: |
       Replace this with your actual feature description.
     priority: 1
+    planMode: false                # Executes directly without plan generation
     metadata:
       estimate: 4h
       assignee: claude
@@ -149,9 +158,9 @@ tickets:
 export function createInitCommand(): Command {
   return new Command('init')
     .description('Initialize planbot in the current directory')
-    .option('--advanced', 'Use advanced template with hooks and messaging config')
+    .option('--simple', 'Use simple template without hooks or messaging config')
     .option('--force', 'Overwrite existing configuration')
-    .action(async (options: { advanced?: boolean; force?: boolean }) => {
+    .action(async (options: { simple?: boolean; force?: boolean }) => {
       const cwd = process.cwd();
       const planbotDir = join(cwd, '.planbot');
       const ticketsPath = join(cwd, 'tickets.yaml');
@@ -174,7 +183,7 @@ export function createInitCommand(): Command {
         spinner.text = 'Created .planbot directory...';
 
         // Write tickets template
-        const template = options.advanced ? ADVANCED_TEMPLATE : BASIC_TEMPLATE;
+        const template = options.simple ? BASIC_TEMPLATE : ADVANCED_TEMPLATE;
         await writeTextFile(ticketsPath, template);
         spinner.text = 'Created tickets.yaml...';
 
@@ -185,8 +194,8 @@ export function createInitCommand(): Command {
         console.log(chalk.dim('  2. Run: planbot start tickets.yaml'));
         console.log(chalk.dim('  3. Approve plans and monitor progress'));
 
-        if (options.advanced) {
-          console.log('\n' + chalk.yellow('Note: ') + 'Advanced template includes messaging and hook configurations.');
+        if (!options.simple) {
+          console.log('\n' + chalk.yellow('Note: ') + 'Template includes hook configurations.');
           console.log(chalk.dim('  See comments in tickets.yaml for setup instructions.'));
         }
 
@@ -194,7 +203,7 @@ export function createInitCommand(): Command {
         console.log(chalk.dim(`  - ${ticketsPath}`));
         console.log(chalk.dim(`  - ${planbotDir}/`));
 
-        logger.debug('Planbot initialized', { cwd, advanced: options.advanced });
+        logger.debug('Planbot initialized', { cwd, simple: options.simple });
       } catch (err) {
         spinner.fail('Failed to initialize planbot');
         const message = err instanceof Error ? err.message : String(err);
