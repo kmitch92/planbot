@@ -70,6 +70,7 @@ export function parseUserInputToTicket(input: string): Ticket | null {
     description,
     priority: 0,
     status: 'pending' as const,
+    complete: false,
   };
 }
 

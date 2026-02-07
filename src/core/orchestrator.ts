@@ -15,6 +15,7 @@ import {
   TicketSchema,
 } from "./schemas.js";
 import { stateManager } from "./state.js";
+import { markTicketCompleteInFile } from "./tickets-io.js";
 import { claude } from "./claude.js";
 import { hookExecutor, type HookContext } from "./hooks.js";
 import type { Multiplexer } from "../messaging/multiplexer.js";
@@ -668,6 +669,7 @@ class OrchestratorImpl
       logger.info("Dry run: skipping actual execution");
       ticket.status = "completed";
       await this.saveTicketsFile();
+      await markTicketCompleteInFile(this.ticketsFilePath, ticket.id);
       this.emit("ticket:completed", ticket);
       this.multiplexer.broadcastStatus({
         ticketId: ticket.id,
@@ -706,6 +708,7 @@ class OrchestratorImpl
         if (result.success) {
           ticket.status = "completed";
           await this.saveTicketsFile();
+          await markTicketCompleteInFile(this.ticketsFilePath, ticket.id);
           await this.executeHooks(hooks, "onComplete", {
             ticketId: ticket.id,
             ticketTitle: ticket.title,
@@ -770,6 +773,7 @@ class OrchestratorImpl
     if (result.success) {
       ticket.status = "completed";
       await this.saveTicketsFile();
+      await markTicketCompleteInFile(this.ticketsFilePath, ticket.id);
       await this.executeHooks(hooks, "onComplete", {
         ticketId: ticket.id,
         ticketTitle: ticket.title,
@@ -941,6 +945,11 @@ class OrchestratorImpl
     );
 
     return allTickets.filter((ticket) => {
+      // Skip completed tickets (persisted in YAML)
+      if (ticket.complete) {
+        return false;
+      }
+
       if (ticket.status !== "pending") {
         return false;
       }
