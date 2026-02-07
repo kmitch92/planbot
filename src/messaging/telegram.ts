@@ -330,30 +330,46 @@ class TelegramProvider implements MessagingProvider {
     // Send header message
     const header = [
       "📋 *Plan Review*",
-      `*Ticket:* ${escapeMarkdown(plan.ticketId)} \\- ${escapeMarkdown(plan.ticketTitle)}`,
+      `*Ticket:* ${escapeMarkdown(plan.ticketId)} - ${escapeMarkdown(plan.ticketTitle)}`,
     ].join("\n");
 
-    await this.bot.sendMessage(this.chatId, header, {
-      parse_mode: "Markdown",
+    logger.info("Sending plan to Telegram", {
+      planId: plan.planId,
+      ticketId: plan.ticketId,
+      planLength: plan.plan.length,
     });
+
+    try {
+      await this.bot.sendMessage(this.chatId, header, {
+        parse_mode: "Markdown",
+      });
+    } catch (error) {
+      logger.warn("Failed to send plan header with Markdown, retrying without", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      // Retry without parse_mode
+      await this.bot.sendMessage(this.chatId, `📋 Plan Review\nTicket: ${plan.ticketId} - ${plan.ticketTitle}`);
+    }
 
     // Send the full plan content, splitting into chunks if needed
     const planChunks = this.splitMessage(plan.plan, TELEGRAM_MESSAGE_LIMIT - 100);
     for (const chunk of planChunks) {
-      await this.bot.sendMessage(
-        this.chatId,
-        escapeMarkdown(chunk),
-        { parse_mode: "Markdown" }
-      );
+      try {
+        await this.bot.sendMessage(this.chatId, chunk);
+      } catch (error) {
+        logger.warn("Failed to send plan chunk", {
+          error: error instanceof Error ? error.message : String(error),
+          chunkLength: chunk.length,
+        });
+      }
     }
 
     // Send approval inline keyboard
     try {
       const sentMessage = await this.bot.sendMessage(
         this.chatId,
-        `*[${escapeMarkdown(plan.ticketId)}] Approve this plan?*`,
+        `[${plan.ticketId}] Approve this plan?`,
         {
-          parse_mode: "Markdown",
           reply_markup: {
             inline_keyboard: [
               [
@@ -369,12 +385,13 @@ class TelegramProvider implements MessagingProvider {
       // Track the approval message for later editing
       this.pendingApprovalMessages.set(plan.planId, sentMessage.message_id);
 
-      logger.debug("Sent plan for approval with inline keyboard", {
+      logger.info("Plan sent to Telegram with approval buttons", {
         planId: plan.planId,
         messageId: sentMessage.message_id,
+        chunks: planChunks.length,
       });
     } catch (error) {
-      logger.error("Failed to send plan approval message", {
+      logger.error("Failed to send plan approval buttons", {
         error: error instanceof Error ? error.message : String(error),
         planId: plan.planId,
       });
@@ -423,7 +440,7 @@ class TelegramProvider implements MessagingProvider {
           options: question.options,
         });
 
-        logger.debug("Sent question as inline keyboard", {
+        logger.info("Sent question as inline keyboard", {
           questionId: question.questionId,
           messageId: sentMessage.message_id,
         });
@@ -447,7 +464,7 @@ class TelegramProvider implements MessagingProvider {
           options: question.options,
         });
 
-        logger.debug("Sent question as free text", {
+        logger.info("Sent question as free text", {
           questionId: question.questionId,
           messageId: sentMessage.message_id,
         });
@@ -488,7 +505,7 @@ class TelegramProvider implements MessagingProvider {
         parse_mode: "Markdown",
       });
 
-      logger.debug("Sent status update", {
+      logger.info("Sent status to Telegram", {
         ticketId: status.ticketId,
         status: status.status,
       });
