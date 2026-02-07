@@ -373,6 +373,11 @@ function setupEventHandlers(
     }
   });
 
+  orchestrator.on('ticket:output', (_ticket, text) => {
+    // Stream Claude output directly to terminal
+    process.stdout.write(chalk.dim(text));
+  });
+
   orchestrator.on('ticket:completed', (ticket) => {
     console.log(chalk.green.bold(`\n>>> Completed: ${ticket.title}`));
   });
