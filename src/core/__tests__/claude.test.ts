@@ -100,7 +100,10 @@ describe("Claude Wrapper - Plan Generation", () => {
 
   it("spawns claude with correct args for plan generation", async () => {
     const mockProc = createMockProcess({
-      stdout: [JSON.stringify({ result: "Plan content here" })],
+      stdout: [
+        JSON.stringify({ type: "assistant", message: "Plan content here" }) + "\n",
+        JSON.stringify({ type: "result", result: "", cost_usd: 0.01, session_id: "s1" }) + "\n",
+      ],
       exitCode: 0,
     });
     mockSpawn.mockReturnValue(mockProc);
@@ -109,14 +112,17 @@ describe("Claude Wrapper - Plan Generation", () => {
 
     expect(mockSpawn).toHaveBeenCalledWith(
       "claude",
-      ["--print", "--output-format", "json", "--permission-mode", "plan", "--model", "opus"],
+      ["--print", "--output-format", "stream-json", "--permission-mode", "plan", "--model", "opus"],
       expect.objectContaining({ stdio: ["pipe", "pipe", "pipe"] })
     );
   });
 
   it("writes prompt to stdin", async () => {
     const mockProc = createMockProcess({
-      stdout: [JSON.stringify({ result: "Plan content" })],
+      stdout: [
+        JSON.stringify({ type: "assistant", message: "Plan content" }) + "\n",
+        JSON.stringify({ type: "result", result: "", cost_usd: 0.01 }) + "\n",
+      ],
       exitCode: 0,
     });
     mockSpawn.mockReturnValue(mockProc);
@@ -130,7 +136,10 @@ describe("Claude Wrapper - Plan Generation", () => {
   it("returns success with plan content on successful exit", async () => {
     const planContent = "## Plan\n\n1. Step one\n2. Step two";
     const mockProc = createMockProcess({
-      stdout: [JSON.stringify({ result: planContent, cost_usd: 0.05 })],
+      stdout: [
+        JSON.stringify({ type: "assistant", message: planContent }) + "\n",
+        JSON.stringify({ type: "result", result: "", cost_usd: 0.05, session_id: "s1" }) + "\n",
+      ],
       exitCode: 0,
     });
     mockSpawn.mockReturnValue(mockProc);
@@ -144,7 +153,9 @@ describe("Claude Wrapper - Plan Generation", () => {
 
   it("returns success false on non-zero exit code", async () => {
     const mockProc = createMockProcess({
-      stderr: ["Error: API key invalid"],
+      stdout: [
+        JSON.stringify({ type: "error", error: "API key invalid" }) + "\n",
+      ],
       exitCode: 1,
     });
     mockSpawn.mockReturnValue(mockProc);
@@ -184,9 +195,12 @@ describe("Claude Wrapper - Plan Generation", () => {
     expect(proc.kill).toHaveBeenCalledWith("SIGTERM");
   });
 
-  it("parses cost_usd from output", async () => {
+  it("parses cost_usd from result event", async () => {
     const mockProc = createMockProcess({
-      stdout: [JSON.stringify({ result: "Plan", cost_usd: 0.123 })],
+      stdout: [
+        JSON.stringify({ type: "assistant", message: "Plan" }) + "\n",
+        JSON.stringify({ type: "result", result: "", cost_usd: 0.123, session_id: "s1" }) + "\n",
+      ],
       exitCode: 0,
     });
     mockSpawn.mockReturnValue(mockProc);

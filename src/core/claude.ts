@@ -106,14 +106,14 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
    * Generate a plan using Claude's plan permission mode
    */
   async generatePlan(prompt: string, options: ClaudeOptions = {}, onOutput?: (text: string) => void): Promise<PlanResult> {
-    const { model, timeout = 300000, cwd } = options;
+    const { model, timeout = 900000, cwd } = options;
 
-    logger.debug('Generating plan with Claude', { model, timeout });
+    logger.info('Generating plan with Claude', { model, timeout });
 
     return new Promise((resolve) => {
       const args = [
         '--print',
-        '--output-format', 'json',
+        '--output-format', 'stream-json',
         '--permission-mode', 'plan',
       ];
       if (model) {
@@ -125,9 +125,12 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
         stdio: ['pipe', 'pipe', 'pipe'],
       });
 
-      let stdout = '';
-      let stderr = '';
+      const assistantMessages: string[] = [];
+      let costUsd: number | undefined;
+      let sessionId: string | undefined;
+      let errorMessage: string | undefined;
       let timedOut = false;
+      let lineBuffer = '';
 
       const timer = setTimeout(() => {
         timedOut = true;
@@ -136,15 +139,46 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
       }, timeout);
 
       proc.stdout?.on('data', (chunk: Buffer) => {
-        const text = chunk.toString();
-        stdout += text;
-        onOutput?.(text);
+        const data = chunk.toString();
+        onOutput?.(data);
+
+        lineBuffer += data;
+        const lines = lineBuffer.split('\n');
+        lineBuffer = lines.pop() ?? '';
+
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          try {
+            const parsed = JSON.parse(line) as Record<string, unknown>;
+            const type = parsed.type as string | undefined;
+
+            if (type === 'assistant') {
+              const text = this.extractTextContent(parsed as any);
+              if (text) {
+                assistantMessages.push(text);
+              }
+            } else if (type === 'result') {
+              costUsd = parsed.total_cost_usd as number | undefined
+                ?? parsed.cost_usd as number | undefined;
+              sessionId = parsed.session_id as string | undefined;
+              // Also check if result has text content
+              const resultText = parsed.result as string | undefined;
+              if (resultText) {
+                assistantMessages.push(resultText);
+              }
+            } else if (type === 'error') {
+              errorMessage = (parsed.error ?? parsed.message) as string | undefined;
+            }
+          } catch {
+            // Not valid JSON, skip
+          }
+        }
       });
 
       proc.stderr?.on('data', (chunk: Buffer) => {
         const text = chunk.toString();
-        stderr += text;
         onOutput?.(text);
+        logger.debug('Claude stderr during plan generation', { text: text.slice(0, 200) });
       });
 
       proc.on('error', (err) => {
@@ -159,74 +193,82 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
       proc.on('close', (code) => {
         clearTimeout(timer);
 
+        // Process remaining buffer
+        if (lineBuffer.trim()) {
+          try {
+            const parsed = JSON.parse(lineBuffer) as Record<string, unknown>;
+            const type = parsed.type as string | undefined;
+            if (type === 'assistant') {
+              const text = this.extractTextContent(parsed as any);
+              if (text) assistantMessages.push(text);
+            } else if (type === 'result') {
+              costUsd = parsed.total_cost_usd as number | undefined
+                ?? parsed.cost_usd as number | undefined;
+              sessionId = parsed.session_id as string | undefined;
+              const resultText = parsed.result as string | undefined;
+              if (resultText) assistantMessages.push(resultText);
+            } else if (type === 'error') {
+              errorMessage = (parsed.error ?? parsed.message) as string | undefined;
+            }
+          } catch {
+            // Not valid JSON
+          }
+        }
+
         logger.info('Claude plan process exited', {
-            code,
-            stdoutBytes: stdout.length,
-            stderrBytes: stderr.length,
+          code,
+          assistantMessages: assistantMessages.length,
+          totalPlanChars: assistantMessages.join('').length,
+          costUsd,
+          sessionId,
         });
 
         if (timedOut) {
           resolve({
             success: false,
             error: 'Plan generation timed out',
+            costUsd,
+          });
+          return;
+        }
+
+        if (errorMessage) {
+          resolve({
+            success: false,
+            error: errorMessage,
+            costUsd,
           });
           return;
         }
 
         if (code !== 0) {
-          logger.error('Claude exited with non-zero code', {
-            code,
-            stderrPreview: stderr.slice(0, 1000),
-            stdoutPreview: stdout.slice(0, 500),
-            stdoutBytes: stdout.length,
-            stderrBytes: stderr.length,
-          });
           resolve({
             success: false,
-            error: stderr.trim() || `Claude exited with code ${code}`,
+            error: `Claude exited with code ${code}`,
+            costUsd,
           });
           return;
         }
 
-        try {
-          const output = this.parseJsonOutput(stdout);
-
-          if (output.error) {
-            resolve({
-              success: false,
-              error: output.error,
-              costUsd: output.cost_usd,
-            });
-            return;
+        // Use the LAST assistant message as the plan (it's typically the final summary).
+        // If there's only one, use it. If the last one is very short, concatenate all.
+        let plan = '';
+        if (assistantMessages.length > 0) {
+          const lastMessage = assistantMessages[assistantMessages.length - 1];
+          if (assistantMessages.length === 1 || lastMessage.length > 100) {
+            plan = lastMessage;
+          } else {
+            // Last message is short — likely just a conclusion.
+            // Use all assistant messages as the plan.
+            plan = assistantMessages.join('\n\n');
           }
-
-          const plan = this.extractPlanContent(output);
-
-          if (!plan) {
-            logger.warn('Plan extraction returned empty content', {
-              outputKeys: Object.keys(output),
-              hasResult: !!output.result,
-              hasMessage: !!output.message,
-              hasContent: !!output.content,
-              stdoutPreview: stdout.slice(0, 1000),
-            });
-          }
-
-          resolve({
-            success: true,
-            plan,
-            costUsd: output.cost_usd,
-          });
-        } catch (err) {
-          logger.error('Failed to parse Claude output', {
-            error: err instanceof Error ? err.message : String(err),
-            stdout: stdout.slice(0, 500),
-          });
-          resolve({
-            success: false,
-            error: `Failed to parse Claude output: ${err instanceof Error ? err.message : String(err)}`,
-          });
         }
+
+        resolve({
+          success: true,
+          plan,
+          costUsd,
+        });
       });
 
       // Write prompt to stdin
@@ -621,69 +663,6 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
         error: err instanceof Error ? err.message : String(err),
       });
     }
-  }
-
-  private parseJsonOutput(stdout: string): ClaudeJsonOutput {
-    // Handle both single JSON and stream-json output
-    const trimmed = stdout.trim();
-
-    // Try parsing as single JSON object first
-    if (trimmed.startsWith('{')) {
-      try {
-        return JSON.parse(trimmed) as ClaudeJsonOutput;
-      } catch {
-        // Fall through to line-by-line parsing
-      }
-    }
-
-    // Parse as stream-json (newline-delimited)
-    const lines = trimmed.split('\n');
-    let lastResult: ClaudeJsonOutput = {};
-
-    for (const line of lines) {
-      if (line.trim()) {
-        try {
-          const parsed = JSON.parse(line) as ClaudeJsonOutput;
-          // Keep the last result-type message
-          if (parsed.type === 'result' || parsed.result !== undefined) {
-            lastResult = { ...lastResult, ...parsed };
-          } else if (parsed.type === 'error' || parsed.error !== undefined) {
-            lastResult = { ...lastResult, ...parsed };
-          } else if (parsed.session_id) {
-            lastResult.session_id = parsed.session_id;
-          }
-          if (parsed.cost_usd !== undefined) {
-            lastResult.cost_usd = parsed.cost_usd;
-          }
-        } catch {
-          // Skip invalid JSON lines
-        }
-      }
-    }
-
-    return lastResult;
-  }
-
-  private extractPlanContent(output: ClaudeJsonOutput): string {
-    // Try result field first
-    if (output.result) {
-      return output.result;
-    }
-
-    // Try message field
-    if (output.message) {
-      return output.message;
-    }
-
-    // Try content array (common Claude output format)
-    if (output.content && Array.isArray(output.content)) {
-      const textParts = output.content
-        .filter(c => c.type === 'text' && c.text)
-        .map(c => c.text);
-      return textParts.join('\n');
-    }
-
-    return '';
   }
 
   private extractTextContent(output: ClaudeJsonOutput): string {
