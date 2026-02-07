@@ -129,6 +129,12 @@ class TelegramProvider implements MessagingProvider {
         polling: this.usePolling,
       });
 
+      // Clear any stale webhook that would prevent polling from receiving updates
+      if (this.usePolling) {
+        await this.bot.deleteWebHook();
+        logger.info("Cleared webhook, polling for updates");
+      }
+
       // Register message handler for replies
       this.bot.on("message", (msg) => {
         this.handleMessage(msg).catch((error) => {
@@ -443,8 +449,16 @@ class TelegramProvider implements MessagingProvider {
       query.from.username || query.from.first_name || String(query.from.id);
     const [action, ...rest] = query.data.split(":");
 
-    // Acknowledge the callback to remove loading state
-    await this.bot.answerCallbackQuery(query.id);
+    logger.info("Callback query received", { action, data: query.data, respondedBy });
+
+    // Acknowledge the callback (non-fatal — don't let this block approval)
+    try {
+      await this.bot.answerCallbackQuery(query.id);
+    } catch (error) {
+      logger.warn("Failed to acknowledge callback query", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
 
     // Handle question answer callbacks: answer:questionId:value
     if (action === "answer") {
@@ -459,7 +473,23 @@ class TelegramProvider implements MessagingProvider {
       );
       const displayLabel = selectedOption?.label || answerValue;
 
-      // Edit original message to show answer
+      // Fire response callback FIRST — critical path
+      if (this.onQuestionResponse) {
+        this.onQuestionResponse({
+          questionId,
+          answer: answerValue,
+          respondedBy,
+          respondedAt: new Date(),
+        });
+      }
+
+      logger.info("Question answered via Telegram", {
+        questionId,
+        answer: answerValue,
+        respondedBy,
+      });
+
+      // Then optional UI update
       if (pending) {
         try {
           await this.bot.editMessageText(
@@ -478,20 +508,6 @@ class TelegramProvider implements MessagingProvider {
         this.pendingQuestionButtons.delete(questionId);
       }
 
-      if (this.onQuestionResponse) {
-        this.onQuestionResponse({
-          questionId,
-          answer: answerValue,
-          respondedBy,
-          respondedAt: new Date(),
-        });
-      }
-
-      logger.debug("Question answered via inline button", {
-        questionId,
-        answer: answerValue,
-        respondedBy,
-      });
       return;
     }
 
@@ -500,8 +516,27 @@ class TelegramProvider implements MessagingProvider {
     if (!planId) return;
 
     if (action === "approve") {
-      // Edit the original message to show approval
+      // Capture messageId BEFORE delete
       const messageId = this.pendingApprovalMessages.get(planId);
+      this.pendingApprovalMessages.delete(planId);
+      this.storedPlans.delete(planId);
+
+      // Fire approval callback FIRST — critical path
+      if (this.onApproval) {
+        this.onApproval({
+          planId,
+          approved: true,
+          respondedBy,
+          respondedAt: new Date(),
+        });
+      }
+
+      logger.info("Plan approved via Telegram", {
+        planId,
+        respondedBy,
+      });
+
+      // Then optional UI update
       if (messageId) {
         try {
           await this.bot.editMessageText(
@@ -518,23 +553,6 @@ class TelegramProvider implements MessagingProvider {
           });
         }
       }
-
-      this.pendingApprovalMessages.delete(planId);
-      this.storedPlans.delete(planId);
-
-      if (this.onApproval) {
-        this.onApproval({
-          planId,
-          approved: true,
-          respondedBy,
-          respondedAt: new Date(),
-        });
-      }
-
-      logger.debug("Plan approved via inline button", {
-        planId,
-        respondedBy,
-      });
     } else if (action === "reject" || action === "feedback") {
       // Ask for reason via force_reply
       const userId = query.from.id;
@@ -544,6 +562,12 @@ class TelegramProvider implements MessagingProvider {
         action === "reject"
           ? "Please reply with the rejection reason:"
           : "Please reply with your feedback:";
+
+      logger.info("Rejection/feedback requested via Telegram", {
+        planId,
+        action,
+        respondedBy,
+      });
 
       const reasonMsg = await this.bot.sendMessage(
         this.chatId,
@@ -560,12 +584,6 @@ class TelegramProvider implements MessagingProvider {
       this.pendingRejections.set(reasonMsg.message_id, {
         planId,
         messageId: reasonMsg.message_id,
-      });
-
-      logger.debug("Awaiting rejection/feedback reason", {
-        planId,
-        action,
-        respondedBy,
       });
     }
   }
