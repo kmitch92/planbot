@@ -462,57 +462,68 @@ class OrchestratorImpl
       ticketStatus: ticket.status,
     });
 
-    // Phase: Planning
-    await this.updateState({ currentTicketId: ticket.id, currentPhase: "planning" });
-    ticket.status = "planning";
-    await this.saveTicketsFile();
+    // Resolve effective plan mode (ticket override > global config)
+    const usePlanMode = ticket.planMode ?? config.planMode;
 
-    const plan = await this.generatePlan(ticket, config);
-
-    // Save plan
-    const planPath = await stateManager.savePlan(this.projectRoot, ticket.id, plan);
-
-    // Execute onPlanGenerated hooks
-    await this.executeHooks(mergedHooks, "onPlanGenerated", {
-      ticketId: ticket.id,
-      ticketTitle: ticket.title,
-      plan,
-      planPath,
-    });
-
-    this.emit("ticket:plan-generated", ticket, plan);
-
-    // Phase: Awaiting Approval
-    await this.updateState({ currentPhase: "awaiting_approval" });
-    ticket.status = "awaiting_approval";
-    await this.saveTicketsFile();
-
-    const approved = await this.waitForApproval(ticket, plan, config);
-
-    // Execute onApproval hooks
-    await this.executeHooks(mergedHooks, "onApproval", {
-      ticketId: ticket.id,
-      ticketTitle: ticket.title,
-      plan,
-    });
-
-    if (!approved) {
-      ticket.status = "skipped";
+    if (usePlanMode) {
+      // Phase: Planning
+      await this.updateState({ currentTicketId: ticket.id, currentPhase: "planning" });
+      ticket.status = "planning";
       await this.saveTicketsFile();
-      await this.executeHooks(mergedHooks, "afterEach", {
+
+      const plan = await this.generatePlan(ticket, config);
+
+      // Save plan
+      const planPath = await stateManager.savePlan(this.projectRoot, ticket.id, plan);
+
+      // Execute onPlanGenerated hooks
+      await this.executeHooks(mergedHooks, "onPlanGenerated", {
         ticketId: ticket.id,
         ticketTitle: ticket.title,
-        ticketStatus: "skipped",
+        plan,
+        planPath,
       });
-      this.emit("ticket:skipped", ticket);
-      logger.clearContext();
-      return;
+
+      this.emit("ticket:plan-generated", ticket, plan);
+
+      // Phase: Awaiting Approval
+      await this.updateState({ currentPhase: "awaiting_approval" });
+      ticket.status = "awaiting_approval";
+      await this.saveTicketsFile();
+
+      const approved = await this.waitForApproval(ticket, plan, config);
+
+      // Execute onApproval hooks
+      await this.executeHooks(mergedHooks, "onApproval", {
+        ticketId: ticket.id,
+        ticketTitle: ticket.title,
+        plan,
+      });
+
+      if (!approved) {
+        ticket.status = "skipped";
+        await this.saveTicketsFile();
+        await this.executeHooks(mergedHooks, "afterEach", {
+          ticketId: ticket.id,
+          ticketTitle: ticket.title,
+          ticketStatus: "skipped",
+        });
+        this.emit("ticket:skipped", ticket);
+        logger.clearContext();
+        return;
+      }
+
+      this.emit("ticket:approved", ticket);
+
+      // Phase: Executing
+      await this.executeTicket(ticket, plan, config, mergedHooks);
+    } else {
+      // Direct execution mode — skip planning and approval
+      logger.info("Plan mode disabled, executing directly");
+
+      const directPrompt = this.buildDirectExecutionPrompt(ticket);
+      await this.executeTicket(ticket, directPrompt, config, mergedHooks);
     }
-
-    this.emit("ticket:approved", ticket);
-
-    // Phase: Executing
-    await this.executeTicket(ticket, plan, config, mergedHooks);
 
     // Execute afterEach hooks
     await this.executeHooks(mergedHooks, "afterEach", {
@@ -919,6 +930,24 @@ class OrchestratorImpl
       "",
       "Do NOT implement yet - only plan."
     );
+
+    return parts.join("\n");
+  }
+
+  private buildDirectExecutionPrompt(ticket: Ticket): string {
+    const parts = [
+      `# Task: ${ticket.title}`,
+      "",
+      "## Description",
+      ticket.description,
+    ];
+
+    if (ticket.acceptanceCriteria && ticket.acceptanceCriteria.length > 0) {
+      parts.push("", "## Acceptance Criteria");
+      for (const criterion of ticket.acceptanceCriteria) {
+        parts.push(`- [ ] ${criterion}`);
+      }
+    }
 
     return parts.join("\n");
   }
