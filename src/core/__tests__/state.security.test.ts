@@ -104,3 +104,68 @@ describe("State Manager Security - Path Traversal Prevention", () => {
     });
   });
 });
+
+describe("State Security - Log Sanitization", () => {
+  let testDir: string;
+
+  beforeEach(async () => {
+    testDir = await mkdtemp(join(tmpdir(), "planbot-log-sanitize-test-"));
+    await stateManager.init(testDir);
+  });
+
+  afterEach(async () => {
+    await rm(testDir, { recursive: true, force: true });
+  });
+
+  it("strips ANSI escape sequences from log entries", async () => {
+    const { readFile } = await import("node:fs/promises");
+
+    await stateManager.appendLog(
+      testDir,
+      "SANITIZE-001",
+      "Normal text \x1b[31mRED TEXT\x1b[0m end"
+    );
+
+    const logPath = join(testDir, ".planbot", "logs", "SANITIZE-001.log");
+    const content = await readFile(logPath, "utf-8");
+
+    expect(content).not.toContain("\x1b[31m");
+    expect(content).not.toContain("\x1b[0m");
+    expect(content).toContain("Normal text");
+    expect(content).toContain("end");
+  });
+
+  it("strips other control characters from log entries", async () => {
+    const { readFile } = await import("node:fs/promises");
+
+    await stateManager.appendLog(
+      testDir,
+      "SANITIZE-002",
+      "Text\x00with\x07control\x08chars"
+    );
+
+    const logPath = join(testDir, ".planbot", "logs", "SANITIZE-002.log");
+    const content = await readFile(logPath, "utf-8");
+
+    expect(content).not.toContain("\x00");
+    expect(content).not.toContain("\x07");
+    expect(content).not.toContain("\x08");
+    expect(content).toContain("Text");
+    expect(content).toContain("chars");
+  });
+
+  it("preserves normal text content", async () => {
+    const { readFile } = await import("node:fs/promises");
+
+    await stateManager.appendLog(
+      testDir,
+      "SANITIZE-003",
+      "Normal log entry with special chars: !@#$%"
+    );
+
+    const logPath = join(testDir, ".planbot", "logs", "SANITIZE-003.log");
+    const content = await readFile(logPath, "utf-8");
+
+    expect(content).toContain("Normal log entry with special chars: !@#$%");
+  });
+});
