@@ -27,11 +27,6 @@ export interface TelegramProviderConfig {
 const TELEGRAM_MESSAGE_LIMIT = 4096;
 
 /**
- * Plan content limit (leave room for header/footer).
- */
-const PLAN_CONTENT_LIMIT = 3500;
-
-/**
  * Status emojis for different status types.
  */
 const STATUS_EMOJIS: Record<StatusMessage["status"], string> = {
@@ -40,14 +35,6 @@ const STATUS_EMOJIS: Record<StatusMessage["status"], string> = {
   failed: "❌",
   skipped: "⏭️",
 };
-
-/**
- * Escape special characters for Telegram MarkdownV2.
- * @see https://core.telegram.org/bots/api#markdownv2-style
- */
-function escapeMarkdownV2(text: string): string {
-  return text.replace(/[_*\[\]()~`>#+\-=|{}.!\\]/g, "\\$&");
-}
 
 /**
  * Escape special characters for Telegram Markdown (v1).
@@ -246,26 +233,13 @@ class TelegramProvider implements MessagingProvider {
       parse_mode: "Markdown",
     });
 
-    // Send the full plan content
-    if (plan.plan.length <= PLAN_CONTENT_LIMIT) {
+    // Send the full plan content, splitting into chunks if needed
+    const planChunks = this.splitMessage(plan.plan, TELEGRAM_MESSAGE_LIMIT - 100);
+    for (const chunk of planChunks) {
       await this.bot.sendMessage(
         this.chatId,
-        escapeMarkdown(plan.plan),
+        escapeMarkdown(chunk),
         { parse_mode: "Markdown" }
-      );
-    } else {
-      // Send as document for very long plans
-      const buffer = Buffer.from(plan.plan, "utf-8");
-      await this.bot.sendDocument(
-        this.chatId,
-        buffer,
-        {
-          caption: `Full plan for ${plan.ticketId} - ${plan.ticketTitle}`,
-        },
-        {
-          filename: `plan-${plan.ticketId}.txt`,
-          contentType: "text/plain",
-        }
       );
     }
 
@@ -421,6 +395,40 @@ class TelegramProvider implements MessagingProvider {
       });
       throw error;
     }
+  }
+
+  /**
+   * Split a message into chunks that fit within Telegram's message limit.
+   * Splits at newline boundaries when possible to preserve formatting.
+   */
+  private splitMessage(text: string, maxLength: number): string[] {
+    if (text.length <= maxLength) return [text];
+
+    const chunks: string[] = [];
+    let remaining = text;
+
+    while (remaining.length > 0) {
+      if (remaining.length <= maxLength) {
+        chunks.push(remaining);
+        break;
+      }
+
+      // Try to split at a newline boundary
+      let splitIndex = remaining.lastIndexOf("\n", maxLength);
+      if (splitIndex <= 0 || splitIndex < maxLength * 0.5) {
+        // No good newline break, try space
+        splitIndex = remaining.lastIndexOf(" ", maxLength);
+      }
+      if (splitIndex <= 0 || splitIndex < maxLength * 0.5) {
+        // No good break point, hard split
+        splitIndex = maxLength;
+      }
+
+      chunks.push(remaining.slice(0, splitIndex));
+      remaining = remaining.slice(splitIndex).replace(/^\n/, "");
+    }
+
+    return chunks;
   }
 
   /**
