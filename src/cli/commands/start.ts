@@ -8,9 +8,9 @@ import { randomBytes } from 'node:crypto';
 
 import { createOrchestrator, type Orchestrator } from '../../core/orchestrator.js';
 import { stateManager } from '../../core/state.js';
-import { parseTicketsFile, validateTicketDependencies } from '../../core/schemas.js';
+import { parseTicketsFile, validateTicketDependencies, resolveEnvVars } from '../../core/schemas.js';
 import type { Ticket } from '../../core/schemas.js';
-import { createMultiplexer, TimeoutError } from '../../messaging/index.js';
+import { createMultiplexer, TimeoutError, createTelegramProvider } from '../../messaging/index.js';
 import { createTerminalProvider } from '../../messaging/terminal.js';
 import { fileExists } from '../../utils/fs.js';
 import { logger } from '../../utils/logger.js';
@@ -258,6 +258,27 @@ export function createStartCommand(): Command {
 
         // Add terminal provider to multiplexer
         multiplexer.addProvider(terminal);
+
+        // Add Telegram provider if credentials are available
+        let telegramToken = process.env.TELEGRAM_BOT_TOKEN;
+        let telegramChatId = process.env.TELEGRAM_CHAT_ID;
+
+        if (!telegramToken && config.messaging?.provider === 'telegram') {
+          telegramToken = resolveEnvVars(config.messaging.botToken);
+          telegramChatId = resolveEnvVars(config.messaging.chatId);
+        }
+
+        if (telegramToken && telegramChatId) {
+          logger.debug('Telegram credentials found, adding provider', {
+            chatId: telegramChatId,
+          });
+          const telegram = createTelegramProvider({
+            botToken: telegramToken,
+            chatId: telegramChatId,
+          });
+          multiplexer.addProvider(telegram);
+          console.log(chalk.dim('  Telegram notifications enabled'));
+        }
 
         // Connect providers
         await multiplexer.connectAll();
