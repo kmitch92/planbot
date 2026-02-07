@@ -26,8 +26,12 @@ export interface WebhookServerConfig {
   path: string;
   /** Secret for HMAC signature verification (optional) */
   secret?: string;
-  /** Enable CORS headers (default: true) */
+  /** Enable CORS headers (default: false) */
   cors?: boolean;
+  /** Whitelist of allowed CORS origins */
+  corsOrigins?: string[];
+  /** Allow starting without a secret (insecure mode) */
+  insecure?: boolean;
 }
 
 /**
@@ -100,7 +104,7 @@ interface PendingState {
  * ```
  */
 export function createWebhookServer(config: WebhookServerConfig): WebhookServer {
-  const { port, path, secret, cors = true } = config;
+  const { port, path, secret, cors = false, corsOrigins, insecure } = config;
 
   let app: Application;
   let server: Server | null = null;
@@ -178,11 +182,21 @@ export function createWebhookServer(config: WebhookServerConfig): WebhookServer 
   /**
    * CORS middleware
    */
-  function corsMiddleware(_req: Request, res: Response, next: NextFunction): void {
+  function corsMiddleware(req: Request, res: Response, next: NextFunction): void {
     if (cors) {
-      res.header("Access-Control-Allow-Origin", "*");
-      res.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-      res.header("Access-Control-Allow-Headers", "Content-Type, X-Planbot-Signature");
+      const origin = req.headers.origin;
+      if (corsOrigins && corsOrigins.length > 0) {
+        // Whitelist mode -- only allow listed origins
+        if (origin && corsOrigins.includes(origin)) {
+          res.header("Access-Control-Allow-Origin", origin);
+          res.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+          res.header("Access-Control-Allow-Headers", "Content-Type, X-Planbot-Signature");
+        }
+        // If origin not in whitelist, don't set CORS headers (browser will block)
+      } else {
+        // CORS enabled but no whitelist -- block by not setting any headers
+        // (safer than setting *)
+      }
     }
     next();
   }
@@ -362,6 +376,18 @@ export function createWebhookServer(config: WebhookServerConfig): WebhookServer 
     async start(): Promise<void> {
       if (server) {
         throw new Error("Server is already running");
+      }
+
+      // Require secret unless explicitly running in insecure mode
+      if (!secret && !insecure) {
+        throw new Error(
+          "Webhook server requires a secret for HMAC authentication. " +
+          "Set 'secret' in webhook config or set 'insecure: true' to disable (not recommended)."
+        );
+      }
+
+      if (!secret && insecure) {
+        logger.warn("Webhook server starting in insecure mode without HMAC authentication");
       }
 
       app = setupApp();
