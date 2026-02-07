@@ -91,7 +91,7 @@ interface ClaudeJsonOutput {
   cost_usd?: number;
   session_id?: string;
   error?: string;
-  message?: string;
+  message?: string | Record<string, unknown>;
   tool_name?: string;
   tool_input?: Record<string, unknown>;
   tool_result?: unknown;
@@ -663,7 +663,7 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
       case 'error':
         return {
           type: 'error',
-          error: output.error ?? output.message,
+          error: output.error ?? (typeof output.message === 'string' ? output.message : undefined),
           costUsd: output.cost_usd,
           sessionId: output.session_id,
         };
@@ -731,10 +731,23 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
   }
 
   private extractTextContent(output: ClaudeJsonOutput): string {
+    // Direct string message
     if (output.message && typeof output.message === 'string') {
       return output.message;
     }
 
+    // Verbose format: message is an object with nested content array
+    if (output.message && typeof output.message === 'object') {
+      const msg = output.message as Record<string, unknown>;
+      if (msg.content && Array.isArray(msg.content)) {
+        const textParts = (msg.content as Array<{ type: string; text?: string }>)
+          .filter(c => c.type === 'text' && c.text)
+          .map(c => c.text!);
+        return textParts.join('\n');
+      }
+    }
+
+    // Top-level content array
     if (output.content && Array.isArray(output.content)) {
       const textParts = output.content
         .filter(c => c.type === 'text' && c.text)
