@@ -301,7 +301,7 @@ export function createStartCommand(): Command {
         console.log('');
 
         // Display queue summary
-        displayQueueSummary(ticketsData.tickets, config);
+        displayQueueSummary(ticketsData.tickets);
 
         if (options.dryRun) {
           console.log(chalk.yellow('\nDry run mode: No changes will be made\n'));
@@ -414,8 +414,7 @@ function setupEventHandlers(
 }
 
 function displayQueueSummary(
-  tickets: Array<{ id: string; title: string; status: string; priority: number }>,
-  config: { autoApprove: boolean; skipPermissions: boolean; model: string }
+  tickets: Array<{ id: string; title: string; status: string; priority: number }>
 ): void {
   const pending = tickets.filter(t => t.status === 'pending');
   const completed = tickets.filter(t => t.status === 'completed');
@@ -429,11 +428,4 @@ function displayQueueSummary(
     console.log(chalk.red(`  Failed:        ${failed.length}`));
   }
 
-  console.log('');
-  console.log(chalk.bold('Configuration:'));
-  console.log(chalk.dim(`  Model:         ${config.model}`));
-  console.log(chalk.dim(`  Auto-approve:  ${config.autoApprove ? 'Yes' : 'No'}`));
-  if (config.skipPermissions) {
-    console.log(chalk.red(`  Permissions:   SKIPPED`));
-  }
 }
