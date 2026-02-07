@@ -241,8 +241,13 @@ function createStateManager(): StateManager {
       const logPath = join(paths.logs, `${ticketId}.log`);
       logger.debug('Appending to log', { ticketId, path: logPath });
 
+      // Sanitize: strip ANSI escape sequences and control characters
+      const sanitized = entry
+        .replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '')  // ANSI escape sequences
+        .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '');  // Control chars (except \t \n \r)
+
       const timestamp = new Date().toISOString();
-      const formattedEntry = `[${timestamp}] ${entry}\n`;
+      const formattedEntry = `[${timestamp}] ${sanitized}\n`;
 
       await appendToFile(logPath, formattedEntry);
       logger.debug('Log entry appended', { ticketId });
