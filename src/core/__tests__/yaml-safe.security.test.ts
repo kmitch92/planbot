@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parse as parseYaml } from "yaml";
+import { parse as parseYaml, parseDocument } from "yaml";
 
 describe("YAML Security - Safe Parsing", () => {
   it("rejects YAML with custom tags", () => {
@@ -10,7 +10,13 @@ exploit: !!python/object
   args: ["rm -rf /"]
 `;
 
-    expect(() => parseYaml(maliciousYaml)).toThrow();
+    const doc = parseDocument(maliciousYaml);
+    const tagWarnings = doc.warnings.filter(
+      (w) => w.code === "TAG_RESOLVE_FAILED"
+    );
+
+    expect(tagWarnings.length).toBeGreaterThan(0);
+    expect(tagWarnings[0].message).toContain("python/object");
   });
 
   it("rejects YAML with JavaScript-specific tags", () => {
@@ -19,7 +25,13 @@ exploit: !!js/function >
   function() { return process.env; }
 `;
 
-    expect(() => parseYaml(maliciousYaml)).toThrow();
+    const doc = parseDocument(maliciousYaml);
+    const tagWarnings = doc.warnings.filter(
+      (w) => w.code === "TAG_RESOLVE_FAILED"
+    );
+
+    expect(tagWarnings.length).toBeGreaterThan(0);
+    expect(tagWarnings[0].message).toContain("js/function");
   });
 
   it("accepts valid YAML without custom tags", () => {
@@ -38,6 +50,11 @@ tags:
   - deployment
   - production
 `;
+
+    const doc = parseDocument(validYaml);
+
+    expect(doc.warnings).toHaveLength(0);
+    expect(doc.errors).toHaveLength(0);
 
     const result = parseYaml(validYaml);
 
