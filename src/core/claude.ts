@@ -494,6 +494,7 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
                     costUsd: event.costUsd,
                     sessionId: event.sessionId,
                   };
+                  proc.stdin?.end();
                 } else if (event.type === 'error') {
                   finalResult = {
                     success: false,
@@ -501,6 +502,7 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
                     costUsd: event.costUsd,
                     sessionId: event.sessionId,
                   };
+                  proc.stdin?.end();
                 }
               }
             }).catch(err => {
