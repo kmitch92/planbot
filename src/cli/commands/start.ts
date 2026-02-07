@@ -27,6 +27,7 @@ interface StartOptions {
   continuous?: boolean;
   continuousTimeout?: number;
   verbose?: boolean;
+  iAcceptAutonomousRisk?: boolean;
 }
 
 // =============================================================================
@@ -191,10 +192,21 @@ export function createStartCommand(): Command {
     .option('--auto-approve', 'Automatically approve all plans')
     .option('--skip-permissions', 'Skip Claude permission prompts (dangerous)')
     .option('--allow-shell-hooks', 'Allow shell hook execution from tickets.yaml')
+    .option('--i-accept-autonomous-risk', 'Required when using --skip-permissions with --auto-approve')
     .option('-C, --continuous', 'Keep running and prompt for new plans after completion')
     .option('--continuous-timeout <ms>', 'Timeout for next plan prompt (default: 1 hour)', parseInt)
     .option('-v, --verbose', 'Enable verbose Claude output logging to .planbot/logs/')
     .action(async (ticketsFile: string, options: StartOptions) => {
+      // Safety interlock: reject fully autonomous mode without explicit acknowledgment
+      if (options.skipPermissions && options.autoApprove && !options.iAcceptAutonomousRisk) {
+        console.error(
+          chalk.red.bold('\nERROR: Autonomous mode rejected.\n') +
+          chalk.red('Both --skip-permissions and --auto-approve create fully autonomous execution\n') +
+          chalk.red('with no human oversight. Add --i-accept-autonomous-risk to proceed.\n')
+        );
+        process.exit(1);
+      }
+
       const cwd = process.cwd();
       const ticketsPath = resolve(cwd, ticketsFile);
 
