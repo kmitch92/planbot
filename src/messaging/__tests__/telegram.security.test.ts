@@ -1,32 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import type TelegramBot from "node-telegram-bot-api";
-import { createTelegramProvider } from "../telegram.js";
-import type {
-  MessagingProvider,
-  ApprovalResponse,
-  QuestionResponse,
-} from "../types.js";
-
-vi.mock("node-telegram-bot-api", () => {
-  return {
-    default: vi.fn().mockImplementation(() => ({
-      on: vi.fn(),
-      deleteWebHook: vi.fn().mockResolvedValue(true),
-      getUpdates: vi.fn().mockResolvedValue([]),
-      startPolling: vi.fn().mockResolvedValue(undefined),
-      stopPolling: vi.fn().mockResolvedValue(undefined),
-      removeAllListeners: vi.fn(),
-      sendMessage: vi.fn().mockResolvedValue({ message_id: 1 }),
-      editMessageText: vi.fn().mockResolvedValue(true),
-      answerCallbackQuery: vi.fn().mockResolvedValue(true),
-      getMe: vi.fn().mockResolvedValue({
-        id: 123,
-        is_bot: true,
-        first_name: "TestBot",
-      }),
-    })),
-  };
-});
+import type { MessagingProvider, ApprovalResponse } from "../types.js";
 
 vi.mock("../../utils/logger.js", () => ({
   logger: {
@@ -38,241 +11,168 @@ vi.mock("../../utils/logger.js", () => ({
   },
 }));
 
+import { TelegramApiClient, createTelegramProvider } from "../telegram.js";
+
+function getInternals(provider: MessagingProvider) {
+  return provider as unknown as {
+    trackedMessages: Map<number, unknown>;
+    pollTimer: ReturnType<typeof setTimeout> | null;
+  };
+}
+
 const AUTHORIZED_CHAT_ID = "12345";
 const UNAUTHORIZED_CHAT_ID = 99999;
 
-type ProviderWithCallbacks = MessagingProvider & {
-  onApproval?: (response: ApprovalResponse) => void;
-  onQuestionResponse?: (response: QuestionResponse) => void;
-};
-
-function createCallbackQuery(
-  overrides: Partial<{
-    id: string;
-    data: string;
-    chatId: number;
-    fromId: number;
-    fromUsername: string;
-    messageId: number;
-  }> = {}
-): TelegramBot.CallbackQuery {
-  const {
-    id = "cbq-1",
-    data = "approve:plan-1",
-    chatId = Number(AUTHORIZED_CHAT_ID),
-    fromId = 42,
-    fromUsername = "testuser",
-    messageId = 100,
-  } = overrides;
-
-  return {
-    id,
-    from: {
-      id: fromId,
-      is_bot: false,
-      first_name: "Test",
-      username: fromUsername,
-    },
-    message: {
-      message_id: messageId,
-      date: Math.floor(Date.now() / 1000),
-      chat: {
-        id: chatId,
-        type: "private" as const,
-      },
-    },
-    chat_instance: "test-instance",
-    data,
-  };
-}
-
-function createMessage(
-  overrides: Partial<{
-    text: string;
-    chatId: number;
-    fromId: number;
-    fromUsername: string;
-    messageId: number;
-    replyToMessageId: number;
-  }> = {}
-): TelegramBot.Message {
-  const {
-    text = "Some rejection reason",
-    chatId = Number(AUTHORIZED_CHAT_ID),
-    fromId = 42,
-    fromUsername = "testuser",
-    messageId = 200,
-    replyToMessageId,
-  } = overrides;
-
-  const msg: TelegramBot.Message = {
-    message_id: messageId,
-    date: Math.floor(Date.now() / 1000),
-    chat: {
-      id: chatId,
-      type: "private" as const,
-    },
-    from: {
-      id: fromId,
-      is_bot: false,
-      first_name: "Test",
-      username: fromUsername,
-    },
-    text,
-  };
-
-  if (replyToMessageId !== undefined) {
-    msg.reply_to_message = {
-      message_id: replyToMessageId,
-      date: Math.floor(Date.now() / 1000),
-      chat: {
-        id: chatId,
-        type: "private" as const,
-      },
-    };
-  }
-
-  return msg;
-}
-
-function extractHandlers(provider: ProviderWithCallbacks): {
-  callbackQuery: (query: TelegramBot.CallbackQuery) => Promise<void>;
-  message: (msg: TelegramBot.Message) => Promise<void>;
-} {
-  const bot = (provider as unknown as { bot: { on: ReturnType<typeof vi.fn> } })
-    .bot;
-
-  const callbackQueryCall = bot.on.mock.calls.find(
-    (call: unknown[]) => call[0] === "callback_query"
-  );
-  const messageCall = bot.on.mock.calls.find(
-    (call: unknown[]) => call[0] === "message"
-  );
-
-  if (!callbackQueryCall || !messageCall) {
-    throw new Error("Handlers not registered -- was connect() called?");
-  }
-
-  return {
-    callbackQuery: callbackQueryCall[1] as (
-      query: TelegramBot.CallbackQuery
-    ) => Promise<void>,
-    message: messageCall[1] as (msg: TelegramBot.Message) => Promise<void>,
-  };
-}
-
 describe("Telegram Security - Chat ID Validation", () => {
-  let provider: ProviderWithCallbacks;
+  let provider: MessagingProvider;
   let onApproval: ReturnType<typeof vi.fn>;
-  let onQuestionResponse: ReturnType<typeof vi.fn>;
-  let handlers: ReturnType<typeof extractHandlers>;
+  let messageIdCounter: number;
 
   beforeEach(async () => {
-    vi.clearAllMocks();
+    vi.useFakeTimers();
+    messageIdCounter = 100;
+
+    vi.spyOn(TelegramApiClient.prototype, "getMe").mockResolvedValue({
+      id: 123,
+      first_name: "TestBot",
+    });
+    vi.spyOn(TelegramApiClient.prototype, "sendMessage").mockImplementation(
+      async () => ({ message_id: messageIdCounter++ })
+    );
+    vi.spyOn(TelegramApiClient.prototype, "getUpdates").mockResolvedValue([]);
 
     provider = createTelegramProvider({
       botToken: "fake-token",
       chatId: AUTHORIZED_CHAT_ID,
-      polling: true,
-    }) as ProviderWithCallbacks;
+    });
 
-    onApproval = vi.fn();
-    onQuestionResponse = vi.fn();
+    onApproval = vi.fn<(response: ApprovalResponse) => void>();
     provider.onApproval = onApproval;
-    provider.onQuestionResponse = onQuestionResponse;
 
     await provider.connect();
-    handlers = extractHandlers(provider);
   });
 
   afterEach(async () => {
     await provider.disconnect();
+    vi.useRealTimers();
+    vi.restoreAllMocks();
   });
 
-  it("rejects callback_query from unauthorized chat", async () => {
-    const query = createCallbackQuery({
-      chatId: UNAUTHORIZED_CHAT_ID,
-      data: "approve:plan-1",
+  it("rejects reply from unauthorized chat ID", async () => {
+    await provider.sendPlanForApproval({
+      planId: "plan-unauth-1",
+      ticketId: "TICK-SEC-1",
+      ticketTitle: "Unauthorized reject test",
+      plan: "Plan content",
     });
 
-    await handlers.callbackQuery(query);
+    const internals = getInternals(provider);
+    const trackedEntry = [...internals.trackedMessages.entries()].find(
+      ([, v]) =>
+        (v as { type: string; planId: string }).type === "plan" &&
+        (v as { type: string; planId: string }).planId === "plan-unauth-1"
+    );
+    expect(trackedEntry).toBeDefined();
+    const [trackedMessageId] = trackedEntry!;
+
+    const getUpdatesSpy = TelegramApiClient.prototype
+      .getUpdates as ReturnType<typeof vi.fn>;
+    getUpdatesSpy.mockResolvedValueOnce([
+      {
+        update_id: 5001,
+        message: {
+          message_id: 9001,
+          chat: { id: UNAUTHORIZED_CHAT_ID },
+          text: "yes",
+          from: { id: 666, first_name: "Intruder" },
+          reply_to_message: { message_id: trackedMessageId },
+        },
+      },
+    ]);
+
+    await vi.advanceTimersByTimeAsync(3500);
 
     expect(onApproval).not.toHaveBeenCalled();
+    expect(internals.trackedMessages.has(trackedMessageId)).toBe(true);
   });
 
-  it("rejects message from unauthorized chat", async () => {
-    const userId = 42;
-
-    const awaitingMap = (
-      provider as unknown as {
-        awaitingRejectionReason: Map<number, string>;
-      }
-    ).awaitingRejectionReason;
-    awaitingMap.set(userId, "plan-1");
-
-    const msg = createMessage({
-      chatId: UNAUTHORIZED_CHAT_ID,
-      fromId: userId,
-      text: "My rejection reason",
+  it("accepts reply from authorized chat ID", async () => {
+    await provider.sendPlanForApproval({
+      planId: "plan-auth-1",
+      ticketId: "TICK-SEC-2",
+      ticketTitle: "Authorized accept test",
+      plan: "Plan content",
     });
 
-    await handlers.message(msg);
+    const internals = getInternals(provider);
+    const trackedEntry = [...internals.trackedMessages.entries()].find(
+      ([, v]) =>
+        (v as { type: string; planId: string }).type === "plan" &&
+        (v as { type: string; planId: string }).planId === "plan-auth-1"
+    );
+    expect(trackedEntry).toBeDefined();
+    const [trackedMessageId] = trackedEntry!;
 
-    expect(onApproval).not.toHaveBeenCalled();
-  });
+    const getUpdatesSpy = TelegramApiClient.prototype
+      .getUpdates as ReturnType<typeof vi.fn>;
+    getUpdatesSpy.mockResolvedValueOnce([
+      {
+        update_id: 5002,
+        message: {
+          message_id: 9002,
+          chat: { id: Number(AUTHORIZED_CHAT_ID) },
+          text: "yes",
+          from: { id: 42, first_name: "Owner" },
+          reply_to_message: { message_id: trackedMessageId },
+        },
+      },
+    ]);
 
-  it("accepts callback_query from authorized chat", async () => {
-    const query = createCallbackQuery({
-      chatId: Number(AUTHORIZED_CHAT_ID),
-      data: "approve:plan-1",
-    });
-
-    await handlers.callbackQuery(query);
+    await vi.advanceTimersByTimeAsync(3500);
 
     expect(onApproval).toHaveBeenCalledWith(
       expect.objectContaining({
-        planId: "plan-1",
+        planId: "plan-auth-1",
         approved: true,
       })
     );
   });
 
-  it("accepts message from authorized chat", async () => {
-    const userId = 42;
-
-    const awaitingMap = (
-      provider as unknown as {
-        awaitingRejectionReason: Map<number, string>;
-      }
-    ).awaitingRejectionReason;
-    awaitingMap.set(userId, "plan-1");
-
-    const msg = createMessage({
-      chatId: Number(AUTHORIZED_CHAT_ID),
-      fromId: userId,
-      text: "Not the right approach",
-    });
-
-    await handlers.message(msg);
-
-    expect(onApproval).toHaveBeenCalledWith(
-      expect.objectContaining({
-        planId: "plan-1",
-        approved: false,
-        rejectionReason: "Not the right approach",
-      })
-    );
-  });
-
-  it("logs warning for unauthorized callback_query access attempt", async () => {
+  it("logs warning for unauthorized chat access attempt", async () => {
     const { logger } = await import("../../utils/logger.js");
 
-    const query = createCallbackQuery({
-      chatId: UNAUTHORIZED_CHAT_ID,
-      data: "approve:plan-1",
+    await provider.sendPlanForApproval({
+      planId: "plan-warn-1",
+      ticketId: "TICK-SEC-3",
+      ticketTitle: "Warning log test",
+      plan: "Plan content",
     });
 
-    await handlers.callbackQuery(query);
+    const internals = getInternals(provider);
+    const trackedEntry = [...internals.trackedMessages.entries()].find(
+      ([, v]) =>
+        (v as { type: string; planId: string }).type === "plan" &&
+        (v as { type: string; planId: string }).planId === "plan-warn-1"
+    );
+    expect(trackedEntry).toBeDefined();
+    const [trackedMessageId] = trackedEntry!;
+
+    const getUpdatesSpy = TelegramApiClient.prototype
+      .getUpdates as ReturnType<typeof vi.fn>;
+    getUpdatesSpy.mockResolvedValueOnce([
+      {
+        update_id: 5003,
+        message: {
+          message_id: 9003,
+          chat: { id: UNAUTHORIZED_CHAT_ID },
+          text: "yes",
+          from: { id: 666, first_name: "Intruder" },
+          reply_to_message: { message_id: trackedMessageId },
+        },
+      },
+    ]);
+
+    await vi.advanceTimersByTimeAsync(3500);
 
     expect(logger.warn).toHaveBeenCalledWith(
       expect.stringContaining("unauthorized"),
@@ -283,82 +183,206 @@ describe("Telegram Security - Chat ID Validation", () => {
   });
 });
 
-describe("Telegram Security - Callback Data Validation", () => {
-  let provider: ProviderWithCallbacks;
+describe("Telegram Security - Malicious Reply Content", () => {
+  let provider: MessagingProvider;
   let onApproval: ReturnType<typeof vi.fn>;
-  let onQuestionResponse: ReturnType<typeof vi.fn>;
-  let handlers: ReturnType<typeof extractHandlers>;
+  let messageIdCounter: number;
 
   beforeEach(async () => {
-    vi.clearAllMocks();
+    vi.useFakeTimers();
+    messageIdCounter = 200;
+
+    vi.spyOn(TelegramApiClient.prototype, "getMe").mockResolvedValue({
+      id: 123,
+      first_name: "TestBot",
+    });
+    vi.spyOn(TelegramApiClient.prototype, "sendMessage").mockImplementation(
+      async () => ({ message_id: messageIdCounter++ })
+    );
+    vi.spyOn(TelegramApiClient.prototype, "getUpdates").mockResolvedValue([]);
 
     provider = createTelegramProvider({
       botToken: "fake-token",
       chatId: AUTHORIZED_CHAT_ID,
-      polling: true,
-    }) as ProviderWithCallbacks;
+    });
 
-    onApproval = vi.fn();
-    onQuestionResponse = vi.fn();
+    onApproval = vi.fn<(response: ApprovalResponse) => void>();
     provider.onApproval = onApproval;
-    provider.onQuestionResponse = onQuestionResponse;
 
     await provider.connect();
-    handlers = extractHandlers(provider);
   });
 
   afterEach(async () => {
     await provider.disconnect();
+    vi.useRealTimers();
+    vi.restoreAllMocks();
   });
 
-  it("rejects callback_data with no colon separator", async () => {
-    const query = createCallbackQuery({
-      chatId: Number(AUTHORIZED_CHAT_ID),
-      data: "malicious",
+  it("handles extremely long reply text without crashing", async () => {
+    await provider.sendPlanForApproval({
+      planId: "plan-long-1",
+      ticketId: "TICK-MAL-1",
+      ticketTitle: "Long text test",
+      plan: "Plan content",
     });
 
-    await handlers.callbackQuery(query);
+    const internals = getInternals(provider);
+    const trackedEntry = [...internals.trackedMessages.entries()].find(
+      ([, v]) =>
+        (v as { type: string; planId: string }).type === "plan" &&
+        (v as { type: string; planId: string }).planId === "plan-long-1"
+    );
+    expect(trackedEntry).toBeDefined();
+    const [trackedMessageId] = trackedEntry!;
 
-    expect(onApproval).not.toHaveBeenCalled();
-    expect(onQuestionResponse).not.toHaveBeenCalled();
-  });
+    const longText = "A".repeat(100_000);
 
-  it("rejects callback_data with invalid action prefix", async () => {
-    const query = createCallbackQuery({
-      chatId: Number(AUTHORIZED_CHAT_ID),
-      data: "execute:plan-123",
-    });
+    const getUpdatesSpy = TelegramApiClient.prototype
+      .getUpdates as ReturnType<typeof vi.fn>;
+    getUpdatesSpy.mockResolvedValueOnce([
+      {
+        update_id: 6001,
+        message: {
+          message_id: 9010,
+          chat: { id: Number(AUTHORIZED_CHAT_ID) },
+          text: longText,
+          from: { id: 42, first_name: "Owner" },
+          reply_to_message: { message_id: trackedMessageId },
+        },
+      },
+    ]);
 
-    await handlers.callbackQuery(query);
-
-    expect(onApproval).not.toHaveBeenCalled();
-    expect(onQuestionResponse).not.toHaveBeenCalled();
-  });
-
-  it("rejects callback_data with special characters in identifier", async () => {
-    const query = createCallbackQuery({
-      chatId: Number(AUTHORIZED_CHAT_ID),
-      data: "approve:../etc/passwd",
-    });
-
-    await handlers.callbackQuery(query);
-
-    expect(onApproval).not.toHaveBeenCalled();
-  });
-
-  it("accepts valid approve callback_data", async () => {
-    const query = createCallbackQuery({
-      chatId: Number(AUTHORIZED_CHAT_ID),
-      data: "approve:plan-abc-123",
-    });
-
-    await handlers.callbackQuery(query);
+    await vi.advanceTimersByTimeAsync(3500);
 
     expect(onApproval).toHaveBeenCalledWith(
       expect.objectContaining({
-        planId: "plan-abc-123",
-        approved: true,
+        planId: "plan-long-1",
+        approved: false,
       })
     );
+
+    const callArg = onApproval.mock.calls[0][0] as ApprovalResponse;
+    expect(callArg.rejectionReason).toBe(longText);
+  });
+
+  it("handles special characters in reply text", async () => {
+    await provider.sendPlanForApproval({
+      planId: "plan-xss-1",
+      ticketId: "TICK-MAL-2",
+      ticketTitle: "XSS injection test",
+      plan: "Plan content",
+    });
+
+    const internals = getInternals(provider);
+    const trackedEntry = [...internals.trackedMessages.entries()].find(
+      ([, v]) =>
+        (v as { type: string; planId: string }).type === "plan" &&
+        (v as { type: string; planId: string }).planId === "plan-xss-1"
+    );
+    expect(trackedEntry).toBeDefined();
+    const [trackedMessageId] = trackedEntry!;
+
+    const xssText = "<script>alert('xss')</script>";
+
+    const getUpdatesSpy = TelegramApiClient.prototype
+      .getUpdates as ReturnType<typeof vi.fn>;
+    getUpdatesSpy.mockResolvedValueOnce([
+      {
+        update_id: 6002,
+        message: {
+          message_id: 9011,
+          chat: { id: Number(AUTHORIZED_CHAT_ID) },
+          text: xssText,
+          from: { id: 42, first_name: "Owner" },
+          reply_to_message: { message_id: trackedMessageId },
+        },
+      },
+    ]);
+
+    await vi.advanceTimersByTimeAsync(3500);
+
+    expect(onApproval).toHaveBeenCalledWith(
+      expect.objectContaining({
+        planId: "plan-xss-1",
+        approved: false,
+        rejectionReason: xssText,
+      })
+    );
+  });
+
+  it("handles empty text reply", async () => {
+    await provider.sendPlanForApproval({
+      planId: "plan-empty-1",
+      ticketId: "TICK-MAL-3",
+      ticketTitle: "Empty text test",
+      plan: "Plan content",
+    });
+
+    const internals = getInternals(provider);
+    const trackedEntry = [...internals.trackedMessages.entries()].find(
+      ([, v]) =>
+        (v as { type: string; planId: string }).type === "plan" &&
+        (v as { type: string; planId: string }).planId === "plan-empty-1"
+    );
+    expect(trackedEntry).toBeDefined();
+    const [trackedMessageId] = trackedEntry!;
+
+    const getUpdatesSpy = TelegramApiClient.prototype
+      .getUpdates as ReturnType<typeof vi.fn>;
+    getUpdatesSpy.mockResolvedValueOnce([
+      {
+        update_id: 6003,
+        message: {
+          message_id: 9012,
+          chat: { id: Number(AUTHORIZED_CHAT_ID) },
+          text: "",
+          from: { id: 42, first_name: "Owner" },
+          reply_to_message: { message_id: trackedMessageId },
+        },
+      },
+    ]);
+
+    await vi.advanceTimersByTimeAsync(3500);
+
+    expect(onApproval).not.toHaveBeenCalled();
+    expect(internals.trackedMessages.has(trackedMessageId)).toBe(true);
+  });
+
+  it("ignores non-text replies (no text field)", async () => {
+    await provider.sendPlanForApproval({
+      planId: "plan-photo-1",
+      ticketId: "TICK-MAL-4",
+      ticketTitle: "Photo message test",
+      plan: "Plan content",
+    });
+
+    const internals = getInternals(provider);
+    const trackedEntry = [...internals.trackedMessages.entries()].find(
+      ([, v]) =>
+        (v as { type: string; planId: string }).type === "plan" &&
+        (v as { type: string; planId: string }).planId === "plan-photo-1"
+    );
+    expect(trackedEntry).toBeDefined();
+    const [trackedMessageId] = trackedEntry!;
+
+    const getUpdatesSpy = TelegramApiClient.prototype
+      .getUpdates as ReturnType<typeof vi.fn>;
+    getUpdatesSpy.mockResolvedValueOnce([
+      {
+        update_id: 6004,
+        message: {
+          message_id: 9013,
+          chat: { id: Number(AUTHORIZED_CHAT_ID) },
+          from: { id: 42, first_name: "Owner" },
+          reply_to_message: { message_id: trackedMessageId },
+          photo: [{ file_id: "photo-123", width: 100, height: 100 }],
+        },
+      },
+    ]);
+
+    await vi.advanceTimersByTimeAsync(3500);
+
+    expect(onApproval).not.toHaveBeenCalled();
+    expect(internals.trackedMessages.has(trackedMessageId)).toBe(true);
   });
 });
