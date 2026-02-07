@@ -789,6 +789,16 @@ class TelegramProvider implements MessagingProvider {
     this.pollingErrorCount = 0;
     this.lastUpdateReceived = Date.now();
 
+    // Validate callback data format
+    const callbackDataPattern = /^(approve|reject|feedback|answer):[a-zA-Z0-9_-]+(:[a-zA-Z0-9_:.-]*)?$/;
+    if (!callbackDataPattern.test(query.data)) {
+      logger.warn('Rejected callback query with invalid data format', {
+        data: query.data.slice(0, 100),
+        from: query.from?.username || query.from?.first_name || String(query.from?.id),
+      });
+      return;
+    }
+
     const respondedBy =
       query.from.username || query.from.first_name || String(query.from.id);
     const [action, ...rest] = query.data.split(":");
