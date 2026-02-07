@@ -1,5 +1,7 @@
 import { spawn, ChildProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
+import { createWriteStream, mkdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { logger } from '../utils/logger.js';
 import type { Model } from './schemas.js';
 
@@ -13,6 +15,7 @@ export interface ClaudeOptions {
   skipPermissions?: boolean;
   timeout?: number;
   cwd?: string;
+  verbose?: boolean;
 }
 
 export interface PlanResult {
@@ -106,7 +109,7 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
    * Generate a plan using Claude's plan permission mode
    */
   async generatePlan(prompt: string, options: ClaudeOptions = {}, onOutput?: (text: string) => void): Promise<PlanResult> {
-    const { model, timeout = 900000, cwd } = options;
+    const { model, timeout = 900000, cwd, verbose } = options;
 
     logger.info('Generating plan with Claude', { model, timeout });
 
@@ -127,6 +130,18 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
         stdio: ['pipe', 'pipe', 'pipe'],
       });
 
+      // Write raw output to log file for debugging
+      let logStream: ReturnType<typeof createWriteStream> | null = null;
+      if (verbose && cwd) {
+        const logDir = join(cwd, '.planbot', 'logs');
+        mkdirSync(logDir, { recursive: true });
+        const logPath = join(logDir, `plan-${Date.now()}.log`);
+        logStream = createWriteStream(logPath, { flags: 'w' });
+        logStream.write(`=== Plan generation started at ${new Date().toISOString()} ===\n`);
+        logStream.write(`=== Args: ${args.join(' ')} ===\n\n`);
+        logger.info('Raw output log', { path: logPath });
+      }
+
       const assistantMessages: string[] = [];
       let costUsd: number | undefined;
       let sessionId: string | undefined;
@@ -134,6 +149,7 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
       let timedOut = false;
       let lineBuffer = '';
       let stderrOutput = '';
+      let eventCount = 0;
 
       const timer = setTimeout(() => {
         timedOut = true;
@@ -143,6 +159,7 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
 
       proc.stdout?.on('data', (chunk: Buffer) => {
         const data = chunk.toString();
+        logStream?.write(data);
         onOutput?.(data);
 
         lineBuffer += data;
@@ -154,6 +171,22 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
           try {
             const parsed = JSON.parse(line) as Record<string, unknown>;
             const type = parsed.type as string | undefined;
+            eventCount++;
+
+            // Log first 5 events and all assistant/result events for format diagnosis
+            if (verbose && (eventCount <= 5 || type === 'assistant' || type === 'result')) {
+              logger.info('Plan stream event', {
+                eventCount,
+                type,
+                keys: Object.keys(parsed).join(','),
+                messageType: typeof parsed.message,
+                hasContent: 'content' in parsed,
+                messageKeys: parsed.message && typeof parsed.message === 'object'
+                  ? Object.keys(parsed.message as Record<string, unknown>).join(',')
+                  : undefined,
+                preview: JSON.stringify(parsed).slice(0, 300),
+              });
+            }
 
             if (type === 'assistant') {
               const text = this.extractTextContent(parsed as any);
@@ -180,6 +213,7 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
 
       proc.stderr?.on('data', (chunk: Buffer) => {
         const text = chunk.toString();
+        logStream?.write(`[STDERR] ${text}`);
         stderrOutput += text;
         onOutput?.(text);
         logger.warn('Claude stderr', { text: text.trim().slice(0, 500) });
@@ -196,6 +230,7 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
 
       proc.on('close', (code) => {
         clearTimeout(timer);
+        logStream?.end();
 
         // Process remaining buffer
         if (lineBuffer.trim()) {
@@ -296,7 +331,7 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
     options: ClaudeOptions,
     callbacks: ExecutionCallbacks
   ): Promise<ExecutionResult> {
-    const { model, sessionId, skipPermissions = false, timeout = 1800000, cwd } = options;
+    const { model, sessionId, skipPermissions = false, timeout = 1800000, cwd, verbose } = options;
 
     logger.debug('Executing with Claude', { model, sessionId, skipPermissions });
 
@@ -306,6 +341,7 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
       skipPermissions,
       timeout,
       cwd,
+      verbose,
     }, callbacks);
   }
 
@@ -318,7 +354,7 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
     options: ClaudeOptions,
     callbacks: ExecutionCallbacks
   ): Promise<ExecutionResult> {
-    const { model, skipPermissions = false, timeout = 1800000, cwd } = options;
+    const { model, skipPermissions = false, timeout = 1800000, cwd, verbose } = options;
 
     logger.debug('Resuming Claude session', { sessionId, model });
 
@@ -329,6 +365,7 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
       timeout,
       cwd,
       resume: true,
+      verbose,
     }, callbacks);
   }
 
@@ -380,10 +417,11 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
       timeout: number;
       cwd?: string;
       resume?: boolean;
+      verbose?: boolean;
     },
     callbacks: ExecutionCallbacks
   ): Promise<ExecutionResult> {
-    const { model, sessionId, skipPermissions, timeout, cwd, resume } = options;
+    const { model, sessionId, skipPermissions, timeout, cwd, resume, verbose } = options;
 
     return new Promise((resolve) => {
       const args = [
@@ -415,6 +453,18 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
 
       this.currentProcess = proc;
 
+      // Write raw output to log file for debugging
+      let logStream: ReturnType<typeof createWriteStream> | null = null;
+      if (verbose && cwd) {
+        const logDir = join(cwd, '.planbot', 'logs');
+        mkdirSync(logDir, { recursive: true });
+        const logPath = join(logDir, `exec-${Date.now()}.log`);
+        logStream = createWriteStream(logPath, { flags: 'w' });
+        logStream.write(`=== Execution started at ${new Date().toISOString()} ===\n`);
+        logStream.write(`=== Args: ${args.join(' ')} ===\n\n`);
+        logger.info('Raw output log', { path: logPath });
+      }
+
       let finalResult: ExecutionResult = { success: false };
       let timedOut = false;
       let lineBuffer = '';
@@ -428,6 +478,7 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
       proc.stdout?.on('data', (chunk: Buffer) => {
         const data = chunk.toString();
         callbacks.onOutput?.(data);
+        logStream?.write(data);
 
         lineBuffer += data;
         const lines = lineBuffer.split('\n');
@@ -464,6 +515,7 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
       proc.stderr?.on('data', (chunk: Buffer) => {
         const text = chunk.toString();
         logger.debug('Claude stderr', { text: text.slice(0, 200) });
+        logStream?.write(`[STDERR] ${text}`);
       });
 
       proc.on('error', (err) => {
@@ -478,6 +530,7 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
 
       proc.on('close', (code) => {
         clearTimeout(timer);
+        logStream?.end();
         this.currentProcess = null;
 
         // Process remaining buffer
