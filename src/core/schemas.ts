@@ -134,8 +134,8 @@ export const HooksSchema = z.object({
 export const ModelSchema = z.enum(["sonnet", "opus", "haiku"]);
 
 export const ConfigSchema = z.object({
-  /** Claude model to use */
-  model: ModelSchema.default("sonnet"),
+  /** Claude model override — omit to use your Claude CLI default */
+  model: ModelSchema.optional(),
   /** Maximum budget in dollars per ticket */
   maxBudgetPerTicket: z.number().positive().default(10),
   /** Maximum retry attempts for failed operations */

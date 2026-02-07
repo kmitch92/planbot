@@ -106,7 +106,7 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
    * Generate a plan using Claude's plan permission mode
    */
   async generatePlan(prompt: string, options: ClaudeOptions = {}): Promise<PlanResult> {
-    const { model = 'sonnet', timeout = 300000, cwd } = options;
+    const { model, timeout = 300000, cwd } = options;
 
     logger.debug('Generating plan with Claude', { model, timeout });
 
@@ -115,8 +115,10 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
         '--print',
         '--output-format', 'json',
         '--permission-mode', 'plan',
-        '--model', model,
       ];
+      if (model) {
+        args.push('--model', model);
+      }
 
       const proc = spawn('claude', args, {
         cwd,
@@ -215,7 +217,7 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
     options: ClaudeOptions,
     callbacks: ExecutionCallbacks
   ): Promise<ExecutionResult> {
-    const { model = 'sonnet', sessionId, skipPermissions = false, timeout = 1800000, cwd } = options;
+    const { model, sessionId, skipPermissions = false, timeout = 1800000, cwd } = options;
 
     logger.debug('Executing with Claude', { model, sessionId, skipPermissions });
 
@@ -237,7 +239,7 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
     options: ClaudeOptions,
     callbacks: ExecutionCallbacks
   ): Promise<ExecutionResult> {
-    const { model = 'sonnet', skipPermissions = false, timeout = 1800000, cwd } = options;
+    const { model, skipPermissions = false, timeout = 1800000, cwd } = options;
 
     logger.debug('Resuming Claude session', { sessionId, model });
 
@@ -293,7 +295,7 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
   private async runStreamingProcess(
     prompt: string,
     options: {
-      model: Model;
+      model?: Model;
       sessionId?: string;
       skipPermissions: boolean;
       timeout: number;
@@ -309,8 +311,10 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
         '--print',
         '--input-format', 'stream-json',
         '--output-format', 'stream-json',
-        '--model', model,
       ];
+      if (model) {
+        args.push('--model', model);
+      }
 
       if (sessionId) {
         args.push('--session-id', sessionId);
