@@ -92,6 +92,13 @@ class TelegramProvider implements MessagingProvider {
   private readonly chatId: string;
   private readonly usePolling: boolean;
 
+  /** Interval for periodic health checks */
+  private healthCheckInterval: NodeJS.Timeout | null = null;
+  /** Consecutive polling error counter */
+  private pollingErrorCount = 0;
+  /** Maximum consecutive polling errors before restart */
+  private readonly maxPollingErrors = 5;
+
   /** Map of message ID to pending rejection for tracking rejection reasons */
   private pendingRejections: Map<number, PendingRejection> = new Map();
   /** Map of message ID to pending question for tracking question responses */
@@ -117,6 +124,8 @@ class TelegramProvider implements MessagingProvider {
 
   /**
    * Connect to Telegram and register event handlers.
+   * Creates the bot with polling disabled, deletes any stale webhook,
+   * registers handlers, then starts polling to avoid 409 Conflict race.
    */
   async connect(): Promise<void> {
     if (this.connected) {
@@ -125,17 +134,17 @@ class TelegramProvider implements MessagingProvider {
     }
 
     try {
-      this.bot = new TelegramBot(this.botToken, {
-        polling: this.usePolling,
-      });
+      // Create bot with polling OFF to avoid the constructor starting
+      // polling before the stale webhook is cleared
+      this.bot = new TelegramBot(this.botToken, { polling: false });
 
-      // Clear any stale webhook that would prevent polling from receiving updates
+      // Clear any stale webhook BEFORE polling starts
       if (this.usePolling) {
         await this.bot.deleteWebHook();
-        logger.info("Cleared webhook, polling for updates");
+        logger.info("Cleared webhook before starting polling");
       }
 
-      // Register message handler for replies
+      // Register ALL event handlers before polling begins
       this.bot.on("message", (msg) => {
         this.handleMessage(msg).catch((error) => {
           logger.error("Error handling message", {
@@ -144,7 +153,6 @@ class TelegramProvider implements MessagingProvider {
         });
       });
 
-      // Register callback query handler for inline keyboard buttons
       this.bot.on("callback_query", (query) => {
         this.handleCallbackQuery(query).catch((error) => {
           logger.error("Error handling callback query", {
@@ -153,11 +161,13 @@ class TelegramProvider implements MessagingProvider {
         });
       });
 
-      // Handle polling errors
       this.bot.on("polling_error", (error) => {
-        logger.error("Telegram polling error", {
+        this.pollingErrorCount++;
+
+        logger.warn("Telegram polling error", {
           error: error.message,
           code: (error as NodeJS.ErrnoException).code,
+          consecutiveErrors: this.pollingErrorCount,
         });
 
         // Handle rate limiting (429)
@@ -168,7 +178,26 @@ class TelegramProvider implements MessagingProvider {
             logger.warn(`Rate limited, retry after ${retryAfter} seconds`);
           }
         }
+
+        // Too many consecutive errors — restart polling
+        if (this.pollingErrorCount >= this.maxPollingErrors) {
+          logger.warn(
+            `${this.pollingErrorCount} consecutive polling errors, restarting polling`
+          );
+          this.pollingErrorCount = 0;
+          this.restartPolling();
+        }
       });
+
+      // NOW start polling with robust config
+      if (this.usePolling) {
+        await this.bot.startPolling({
+          restart: true,
+          polling: { params: { timeout: 30 } },
+        });
+        this.startHealthCheck();
+        logger.info("Polling started with long-poll timeout=30s");
+      }
 
       this.connected = true;
       logger.debug("Telegram provider connected", {
@@ -187,9 +216,19 @@ class TelegramProvider implements MessagingProvider {
    * Disconnect from Telegram.
    */
   async disconnect(): Promise<void> {
+    // Clear health check interval
+    if (this.healthCheckInterval) {
+      clearInterval(this.healthCheckInterval);
+      this.healthCheckInterval = null;
+    }
+
     if (this.bot) {
       if (this.usePolling) {
-        this.bot.stopPolling();
+        try {
+          await this.bot.stopPolling();
+        } catch {
+          // Ignore stop errors during disconnect
+        }
       }
       this.bot.removeAllListeners();
       this.bot = null;
@@ -201,6 +240,7 @@ class TelegramProvider implements MessagingProvider {
     this.pendingQuestionButtons.clear();
     this.storedPlans.clear();
     this.awaitingRejectionReason.clear();
+    this.pollingErrorCount = 0;
     this.connected = false;
 
     logger.debug("Telegram provider disconnected");
@@ -211,6 +251,64 @@ class TelegramProvider implements MessagingProvider {
    */
   isConnected(): boolean {
     return this.connected && this.bot !== null;
+  }
+
+  /**
+   * Start periodic health check that verifies bot connectivity.
+   * Runs every 60 seconds and restarts polling if the connection is broken.
+   */
+  private startHealthCheck(): void {
+    if (this.healthCheckInterval) {
+      clearInterval(this.healthCheckInterval);
+    }
+
+    this.healthCheckInterval = setInterval(async () => {
+      if (!this.bot || !this.connected) return;
+
+      try {
+        await this.bot.getMe();
+      } catch (error) {
+        logger.warn("Health check failed, restarting polling", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+        this.restartPolling();
+      }
+    }, 60_000);
+
+    // Allow the process to exit even if the interval is active
+    if (this.healthCheckInterval.unref) {
+      this.healthCheckInterval.unref();
+    }
+  }
+
+  /**
+   * Restart polling after a failure. Stops existing polling (if any),
+   * then starts fresh with the same robust config.
+   */
+  private restartPolling(): void {
+    if (!this.bot) return;
+
+    const bot = this.bot;
+
+    (async () => {
+      try {
+        await bot.stopPolling();
+      } catch {
+        // Ignore errors when stopping — may already be stopped
+      }
+
+      try {
+        await bot.startPolling({
+          restart: true,
+          polling: { params: { timeout: 30 } },
+        });
+        logger.info("Polling restarted successfully");
+      } catch (error) {
+        logger.error("Failed to restart polling", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    })();
   }
 
   /**
@@ -445,6 +543,9 @@ class TelegramProvider implements MessagingProvider {
   ): Promise<void> {
     if (!this.bot || !query.data) return;
 
+    // Reset error count on successful handler execution
+    this.pollingErrorCount = 0;
+
     const respondedBy =
       query.from.username || query.from.first_name || String(query.from.id);
     const [action, ...rest] = query.data.split(":");
@@ -593,6 +694,9 @@ class TelegramProvider implements MessagingProvider {
    */
   private async handleMessage(msg: TelegramBot.Message): Promise<void> {
     if (!this.bot || !msg.text) return;
+
+    // Reset error count on successful handler execution
+    this.pollingErrorCount = 0;
 
     const userId = msg.from?.id;
     const username = msg.from?.username || msg.from?.first_name || String(userId);
