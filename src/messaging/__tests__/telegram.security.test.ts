@@ -282,3 +282,83 @@ describe("Telegram Security - Chat ID Validation", () => {
     );
   });
 });
+
+describe("Telegram Security - Callback Data Validation", () => {
+  let provider: ProviderWithCallbacks;
+  let onApproval: ReturnType<typeof vi.fn>;
+  let onQuestionResponse: ReturnType<typeof vi.fn>;
+  let handlers: ReturnType<typeof extractHandlers>;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+
+    provider = createTelegramProvider({
+      botToken: "fake-token",
+      chatId: AUTHORIZED_CHAT_ID,
+      polling: true,
+    }) as ProviderWithCallbacks;
+
+    onApproval = vi.fn();
+    onQuestionResponse = vi.fn();
+    provider.onApproval = onApproval;
+    provider.onQuestionResponse = onQuestionResponse;
+
+    await provider.connect();
+    handlers = extractHandlers(provider);
+  });
+
+  afterEach(async () => {
+    await provider.disconnect();
+  });
+
+  it("rejects callback_data with no colon separator", async () => {
+    const query = createCallbackQuery({
+      chatId: Number(AUTHORIZED_CHAT_ID),
+      data: "malicious",
+    });
+
+    await handlers.callbackQuery(query);
+
+    expect(onApproval).not.toHaveBeenCalled();
+    expect(onQuestionResponse).not.toHaveBeenCalled();
+  });
+
+  it("rejects callback_data with invalid action prefix", async () => {
+    const query = createCallbackQuery({
+      chatId: Number(AUTHORIZED_CHAT_ID),
+      data: "execute:plan-123",
+    });
+
+    await handlers.callbackQuery(query);
+
+    expect(onApproval).not.toHaveBeenCalled();
+    expect(onQuestionResponse).not.toHaveBeenCalled();
+  });
+
+  it("rejects callback_data with special characters in identifier", async () => {
+    const query = createCallbackQuery({
+      chatId: Number(AUTHORIZED_CHAT_ID),
+      data: "approve:../etc/passwd",
+    });
+
+    await handlers.callbackQuery(query);
+
+    expect(onApproval).not.toHaveBeenCalled();
+  });
+
+  it("accepts valid approve callback_data", async () => {
+    const query = createCallbackQuery({
+      chatId: Number(AUTHORIZED_CHAT_ID),
+      data: "approve:plan-abc-123",
+    });
+
+    await handlers.callbackQuery(query);
+
+    expect(onApproval).toHaveBeenCalledWith(
+      expect.objectContaining({
+        planId: "plan-abc-123",
+        approved: true,
+      })
+    );
+  });
+});
