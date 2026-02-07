@@ -68,6 +68,10 @@ export const WebhookConfigSchema = z.object({
   enabled: z.boolean().default(false),
   port: z.number().int().positive().default(3847),
   path: z.string().startsWith("/").default("/planbot/webhook"),
+  secret: z.string().min(1).optional(),
+  cors: z.boolean().default(false),
+  corsOrigins: z.array(z.string().url()).optional(),
+  insecure: z.boolean().default(false),
 });
 
 // =============================================================================
