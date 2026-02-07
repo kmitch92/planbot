@@ -586,8 +586,17 @@ class OrchestratorImpl
       cwd: this.projectRoot,
     }, (text) => this.handleOutput(ticket, text));
 
-    if (!result.success || !result.plan) {
-      throw new Error(result.error ?? "Plan generation failed");
+    if (!result.success) {
+      throw new Error(result.error ?? "Plan generation failed with unknown error");
+    }
+
+    if (!result.plan) {
+      logger.error("Plan generation returned empty plan", {
+        success: result.success,
+        costUsd: result.costUsd,
+        errorField: result.error,
+      });
+      throw new Error("Plan generation returned empty content — Claude may have produced no output");
     }
 
     logger.info("Plan generated", { costUsd: result.costUsd });

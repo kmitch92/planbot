@@ -159,6 +159,12 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
       proc.on('close', (code) => {
         clearTimeout(timer);
 
+        logger.info('Claude plan process exited', {
+            code,
+            stdoutBytes: stdout.length,
+            stderrBytes: stderr.length,
+        });
+
         if (timedOut) {
           resolve({
             success: false,
@@ -168,10 +174,16 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
         }
 
         if (code !== 0) {
-          logger.error('Claude exited with non-zero code', { code, stderr });
+          logger.error('Claude exited with non-zero code', {
+            code,
+            stderrPreview: stderr.slice(0, 1000),
+            stdoutPreview: stdout.slice(0, 500),
+            stdoutBytes: stdout.length,
+            stderrBytes: stderr.length,
+          });
           resolve({
             success: false,
-            error: stderr || `Claude exited with code ${code}`,
+            error: stderr.trim() || `Claude exited with code ${code}`,
           });
           return;
         }
@@ -189,6 +201,16 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
           }
 
           const plan = this.extractPlanContent(output);
+
+          if (!plan) {
+            logger.warn('Plan extraction returned empty content', {
+              outputKeys: Object.keys(output),
+              hasResult: !!output.result,
+              hasMessage: !!output.message,
+              hasContent: !!output.content,
+              stdoutPreview: stdout.slice(0, 1000),
+            });
+          }
 
           resolve({
             success: true,
