@@ -41,6 +41,7 @@ export interface OrchestratorEvents {
   "ticket:failed": [ticket: Ticket, error: string];
   "ticket:skipped": [ticket: Ticket];
   "ticket:output": [ticket: Ticket, text: string];
+  "ticket:event": [ticket: Ticket, event: { type: string; toolName?: string; message?: string }];
   question: [ticket: Ticket, question: string];
   "queue:start": [];
   "queue:complete": [];
@@ -773,10 +774,11 @@ class OrchestratorImpl
   // Private: Event Handlers
   // ===========================================================================
 
-  private handleClaudeEvent(ticket: Ticket, event: { type: string; message?: string }): void {
+  private handleClaudeEvent(ticket: Ticket, event: { type: string; message?: string; toolName?: string }): void {
     logger.debug("Claude event", { type: event.type });
     const eventLine = `[${event.type}] ${event.message ?? ""}`;
     this.emit("ticket:output", ticket, eventLine);
+    this.emit("ticket:event", ticket, { type: event.type, toolName: event.toolName, message: event.message });
     stateManager.appendLog(this.projectRoot, ticket.id, eventLine).catch((err) => {
       logger.warn("Failed to append log", { error: String(err) });
     });

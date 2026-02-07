@@ -334,6 +334,86 @@ export function createStartCommand(): Command {
 }
 
 // =============================================================================
+// Progress Tracking
+// =============================================================================
+
+interface ExecutionProgress {
+  startTime: number;
+  bytesReceived: number;
+  eventCounts: Record<string, number>;
+  toolCalls: number;
+  lastToolName: string | null;
+  intervalId: NodeJS.Timeout | null;
+}
+
+let progress: ExecutionProgress | null = null;
+
+function startProgressTracker(): void {
+  progress = {
+    startTime: Date.now(),
+    bytesReceived: 0,
+    eventCounts: {},
+    toolCalls: 0,
+    lastToolName: null,
+    intervalId: null,
+  };
+
+  progress.intervalId = setInterval(() => {
+    if (!progress) return;
+    printProgressLine();
+  }, 60_000);
+
+  // Don't prevent process exit
+  progress.intervalId.unref();
+}
+
+function stopProgressTracker(): void {
+  if (progress?.intervalId) {
+    clearInterval(progress.intervalId);
+  }
+  if (progress && progress.bytesReceived > 0) {
+    printProgressLine(); // Print final state
+  }
+  progress = null;
+}
+
+function formatElapsed(ms: number): string {
+  const seconds = Math.floor(ms / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = seconds % 60;
+  if (minutes < 60) return `${minutes}m ${remainingSeconds}s`;
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  return `${hours}h ${remainingMinutes}m`;
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes}B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
+}
+
+function printProgressLine(): void {
+  if (!progress) return;
+
+  const elapsed = formatElapsed(Date.now() - progress.startTime);
+  const bytes = formatBytes(progress.bytesReceived);
+
+  const parts: string[] = [elapsed, bytes + ' output'];
+
+  if (progress.toolCalls > 0) {
+    let toolPart = `${progress.toolCalls} tool calls`;
+    if (progress.lastToolName) {
+      toolPart += ` (last: ${progress.lastToolName})`;
+    }
+    parts.push(toolPart);
+  }
+
+  console.log(chalk.dim(`  ⟳ ${parts.join(' | ')}`));
+}
+
+// =============================================================================
 // Helper Functions
 // =============================================================================
 
@@ -371,20 +451,33 @@ function setupEventHandlers(
     if (dryRun) {
       console.log(chalk.yellow('    (Dry run - no actual changes)'));
     }
+    startProgressTracker();
   });
 
   orchestrator.on('ticket:output', (_ticket, text) => {
-    // Stream Claude output directly to terminal
-    process.stdout.write(chalk.dim(text));
+    if (progress) {
+      progress.bytesReceived += Buffer.byteLength(text, 'utf-8');
+    }
   });
 
   orchestrator.on('ticket:completed', (ticket) => {
+    stopProgressTracker();
     console.log(chalk.green.bold(`\n>>> Completed: ${ticket.title}`));
   });
 
   orchestrator.on('ticket:failed', (ticket, error) => {
+    stopProgressTracker();
     console.log(chalk.red.bold(`\n>>> Failed: ${ticket.title}`));
     console.log(chalk.red(`    Error: ${error}`));
+  });
+
+  orchestrator.on('ticket:event', (_ticket, event) => {
+    if (!progress) return;
+    progress.eventCounts[event.type] = (progress.eventCounts[event.type] ?? 0) + 1;
+    if (event.type === 'tool_use' && event.toolName) {
+      progress.toolCalls++;
+      progress.lastToolName = event.toolName;
+    }
   });
 
   orchestrator.on('ticket:skipped', (ticket) => {
