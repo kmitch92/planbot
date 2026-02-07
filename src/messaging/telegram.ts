@@ -109,6 +109,11 @@ class TelegramProvider implements MessagingProvider {
   private pendingRejections: Map<number, PendingRejection> = new Map();
   /** Map of message ID to pending question for tracking question responses */
   private pendingQuestions: Map<number, PendingQuestion> = new Map();
+  /** Map of poll ID to pending poll for tracking poll responses */
+  private pendingPolls: Map<string,
+    | { type: "question"; questionId: string; options: Array<{ label: string; value: string }> }
+    | { type: "approval"; planId: string; options: Array<{ label: string; value: string }> }
+  > = new Map();
   /** Map of plan ID to stored full plan for view requests */
   private storedPlans: Map<string, StoredPlan> = new Map();
   /** Map of user ID to plan ID awaiting rejection reason */
@@ -138,19 +143,19 @@ class TelegramProvider implements MessagingProvider {
         polling: this.usePolling,
       });
 
-      // Register callback query handler for button presses
-      this.bot.on("callback_query", (query) => {
-        this.handleCallbackQuery(query).catch((error) => {
-          logger.error("Error handling callback query", {
+      // Register message handler for replies
+      this.bot.on("message", (msg) => {
+        this.handleMessage(msg).catch((error) => {
+          logger.error("Error handling message", {
             error: error instanceof Error ? error.message : String(error),
           });
         });
       });
 
-      // Register message handler for replies
-      this.bot.on("message", (msg) => {
-        this.handleMessage(msg).catch((error) => {
-          logger.error("Error handling message", {
+      // Register poll answer handler for native polls
+      this.bot.on("poll_answer", (answer) => {
+        this.handlePollAnswer(answer).catch((error) => {
+          logger.error("Error handling poll answer", {
             error: error instanceof Error ? error.message : String(error),
           });
         });
@@ -200,6 +205,7 @@ class TelegramProvider implements MessagingProvider {
 
     this.pendingRejections.clear();
     this.pendingQuestions.clear();
+    this.pendingPolls.clear();
     this.storedPlans.clear();
     this.awaitingRejectionReason.clear();
     this.connected = false;
@@ -215,14 +221,14 @@ class TelegramProvider implements MessagingProvider {
   }
 
   /**
-   * Send a plan for approval with inline keyboard.
+   * Send a plan for approval with an approval poll.
    */
   async sendPlanForApproval(plan: PlanMessage): Promise<void> {
     if (!this.bot || !this.connected) {
       throw new Error("Telegram provider not connected");
     }
 
-    // Store full plan for view requests
+    // Store full plan for reference
     this.storedPlans.set(plan.planId, {
       planId: plan.planId,
       ticketId: plan.ticketId,
@@ -230,38 +236,71 @@ class TelegramProvider implements MessagingProvider {
       plan: plan.plan,
     });
 
-    // Format message with Markdown
-    const truncatedPlan = truncateText(plan.plan, PLAN_CONTENT_LIMIT);
-    const message = [
+    // Send header message
+    const header = [
       "📋 *Plan Review*",
       `*Ticket:* ${escapeMarkdown(plan.ticketId)} \\- ${escapeMarkdown(plan.ticketTitle)}`,
-      "",
-      escapeMarkdown(truncatedPlan),
     ].join("\n");
 
-    // Create inline keyboard for approval actions
-    const keyboard: TelegramBot.InlineKeyboardMarkup = {
-      inline_keyboard: [
-        [
-          { text: "✅ Approve", callback_data: `approve_${plan.planId}` },
-          { text: "❌ Reject", callback_data: `reject_${plan.planId}` },
-        ],
-        [{ text: "📄 View Full", callback_data: `view_${plan.planId}` }],
-      ],
-    };
+    await this.bot.sendMessage(this.chatId, header, {
+      parse_mode: "Markdown",
+    });
+
+    // Send the full plan content
+    if (plan.plan.length <= PLAN_CONTENT_LIMIT) {
+      await this.bot.sendMessage(
+        this.chatId,
+        escapeMarkdown(plan.plan),
+        { parse_mode: "Markdown" }
+      );
+    } else {
+      // Send as document for very long plans
+      const buffer = Buffer.from(plan.plan, "utf-8");
+      await this.bot.sendDocument(
+        this.chatId,
+        buffer,
+        {
+          caption: `Full plan for ${plan.ticketId} - ${plan.ticketTitle}`,
+        },
+        {
+          filename: `plan-${plan.ticketId}.txt`,
+          contentType: "text/plain",
+        }
+      );
+    }
+
+    // Send approval poll
+    const approvalOptions = [
+      { label: "Approve", value: "approve" },
+      { label: "Reject", value: "reject" },
+      { label: "Provide Feedback", value: "feedback" },
+    ];
 
     try {
-      const sentMessage = await this.bot.sendMessage(this.chatId, message, {
-        parse_mode: "Markdown",
-        reply_markup: keyboard,
-      });
+      const sentPoll = await this.bot.sendPoll(
+        this.chatId,
+        `[${plan.ticketId}] Approve this plan?`,
+        approvalOptions.map((o) => o.label),
+        {
+          is_anonymous: false,
+          allows_multiple_answers: false,
+        }
+      );
 
-      logger.debug("Sent plan for approval", {
+      if (sentPoll.poll) {
+        this.pendingPolls.set(sentPoll.poll.id, {
+          type: "approval",
+          planId: plan.planId,
+          options: approvalOptions,
+        });
+      }
+
+      logger.debug("Sent plan for approval with poll", {
         planId: plan.planId,
-        messageId: sentMessage.message_id,
+        pollId: sentPoll.poll?.id,
       });
     } catch (error) {
-      logger.error("Failed to send plan for approval", {
+      logger.error("Failed to send plan approval poll", {
         error: error instanceof Error ? error.message : String(error),
         planId: plan.planId,
       });
@@ -285,43 +324,68 @@ class TelegramProvider implements MessagingProvider {
       escapeMarkdown(question.question),
     ].join("\n");
 
-    let keyboard: TelegramBot.InlineKeyboardMarkup | undefined;
-
-    // If options provided, create inline keyboard buttons
-    if (question.options && question.options.length > 0) {
-      keyboard = {
-        inline_keyboard: question.options.map((option) => [
-          {
-            text: option.label,
-            callback_data: `answer_${question.questionId}_${option.value}`,
-          },
-        ]),
-      };
-    }
-
     try {
-      const sentMessage = await this.bot.sendMessage(this.chatId, message, {
-        parse_mode: "Markdown",
-        reply_markup: keyboard || {
-          force_reply: true,
-          selective: true,
-        },
-      });
+      if (question.options && question.options.length > 0) {
+        // Send ticket context before the poll
+        const contextMessage = [
+          "❓ *Question*",
+          `*Ticket:* ${escapeMarkdown(question.ticketId)} \\- ${escapeMarkdown(question.ticketTitle)}`,
+        ].join("\n");
 
-      // Track question for reply handling (free text)
-      if (!question.options || question.options.length === 0) {
+        await this.bot.sendMessage(this.chatId, contextMessage, {
+          parse_mode: "Markdown",
+        });
+
+        const optionLabels = question.options.map((o) => o.label);
+
+        const sentMessage = await this.bot.sendPoll(
+          this.chatId,
+          `[${question.ticketId}] ${question.question}`,
+          optionLabels,
+          {
+            is_anonymous: false,
+            allows_multiple_answers: false,
+          }
+        );
+
+        if (sentMessage.poll) {
+          this.pendingPolls.set(sentMessage.poll.id, {
+            type: "question",
+            questionId: question.questionId,
+            options: question.options,
+          });
+        }
+
+        logger.debug("Sent question as poll", {
+          questionId: question.questionId,
+          pollId: sentMessage.poll?.id,
+          messageId: sentMessage.message_id,
+        });
+      } else {
+        // No options - use force_reply for free text
+        const sentMessage = await this.bot.sendMessage(
+          this.chatId,
+          message,
+          {
+            parse_mode: "Markdown",
+            reply_markup: {
+              force_reply: true,
+              selective: true,
+            },
+          }
+        );
+
         this.pendingQuestions.set(sentMessage.message_id, {
           questionId: question.questionId,
           messageId: sentMessage.message_id,
           options: question.options,
         });
-      }
 
-      logger.debug("Sent question", {
-        questionId: question.questionId,
-        messageId: sentMessage.message_id,
-        hasOptions: Boolean(question.options?.length),
-      });
+        logger.debug("Sent question as free text", {
+          questionId: question.questionId,
+          messageId: sentMessage.message_id,
+        });
+      }
     } catch (error) {
       logger.error("Failed to send question", {
         error: error instanceof Error ? error.message : String(error),
@@ -372,212 +436,111 @@ class TelegramProvider implements MessagingProvider {
   }
 
   /**
-   * Handle callback queries from inline keyboard button presses.
+   * Handle poll answer from native Telegram poll (questions and approvals).
    */
-  private async handleCallbackQuery(
-    query: TelegramBot.CallbackQuery
+  private async handlePollAnswer(
+    pollAnswer: TelegramBot.PollAnswer
   ): Promise<void> {
-    if (!this.bot || !query.data || !query.message) {
+    const pollId = pollAnswer.poll_id;
+    const pending = this.pendingPolls.get(pollId);
+
+    if (!pending) {
+      logger.debug("Received poll answer for unknown poll", { pollId });
       return;
     }
 
-    const data = query.data;
-    const messageId = query.message.message_id;
-    const userId = query.from.id;
-    const username = query.from.username || query.from.first_name || String(userId);
-
-    logger.debug("Received callback query", { data, messageId, userId });
-
-    // Parse callback data
-    if (data.startsWith("approve_")) {
-      const planId = data.replace("approve_", "");
-      await this.handleApproval(query, planId, username);
-    } else if (data.startsWith("reject_")) {
-      const planId = data.replace("reject_", "");
-      await this.handleRejectionRequest(query, planId, userId, username);
-    } else if (data.startsWith("view_")) {
-      const planId = data.replace("view_", "");
-      await this.handleViewFull(query, planId);
-    } else if (data.startsWith("answer_")) {
-      const parts = data.split("_");
-      if (parts.length >= 3) {
-        const questionId = parts[1];
-        const answer = parts.slice(2).join("_");
-        await this.handleQuestionAnswer(query, questionId, answer, username);
-      }
+    const selectedIndex = pollAnswer.option_ids[0];
+    if (selectedIndex === undefined || selectedIndex >= pending.options.length) {
+      logger.warn("Invalid poll answer index", { pollId, selectedIndex });
+      return;
     }
-  }
 
-  /**
-   * Handle plan approval.
-   */
-  private async handleApproval(
-    query: TelegramBot.CallbackQuery,
-    planId: string,
-    respondedBy: string
-  ): Promise<void> {
-    if (!this.bot || !query.message) return;
+    const selectedOption = pending.options[selectedIndex];
+    const respondedBy = pollAnswer.user.username || pollAnswer.user.first_name || String(pollAnswer.user.id);
 
-    // Answer callback query
-    await this.bot.answerCallbackQuery(query.id, {
-      text: "Plan approved!",
-    });
+    this.pendingPolls.delete(pollId);
 
-    // Edit message to show approval status
-    await this.bot.editMessageText(
-      `✅ *Plan Approved*\n_Approved by @${escapeMarkdown(respondedBy)}_`,
-      {
-        chat_id: this.chatId,
-        message_id: query.message.message_id,
-        parse_mode: "Markdown",
+    if (pending.type === "question") {
+      // Question poll answer
+      if (this.bot) {
+        await this.bot.sendMessage(
+          this.chatId,
+          `✅ Answer recorded: "${escapeMarkdown(selectedOption.label)}"`,
+          { parse_mode: "Markdown" }
+        );
       }
-    );
 
-    // Emit approval response
-    if (this.onApproval) {
-      this.onApproval({
-        planId,
-        approved: true,
+      if (this.onQuestionResponse) {
+        this.onQuestionResponse({
+          questionId: pending.questionId,
+          answer: selectedOption.value,
+          respondedBy,
+          respondedAt: new Date(),
+        });
+      }
+
+      logger.debug("Poll answer received", {
+        questionId: pending.questionId,
+        answer: selectedOption.value,
         respondedBy,
-        respondedAt: new Date(),
       });
-    }
-
-    // Clean up stored plan
-    this.storedPlans.delete(planId);
-
-    logger.debug("Plan approved", { planId, respondedBy });
-  }
-
-  /**
-   * Handle rejection request - prompt for reason.
-   */
-  private async handleRejectionRequest(
-    query: TelegramBot.CallbackQuery,
-    planId: string,
-    userId: number,
-    username: string
-  ): Promise<void> {
-    if (!this.bot || !query.message) return;
-
-    // Answer callback query
-    await this.bot.answerCallbackQuery(query.id, {
-      text: "Please reply with rejection reason",
-    });
-
-    // Store pending rejection state
-    this.awaitingRejectionReason.set(userId, planId);
-
-    // Send message requesting rejection reason
-    const reasonMessage = await this.bot.sendMessage(
-      this.chatId,
-      `@${escapeMarkdown(username)} Please reply to this message with the rejection reason:`,
-      {
-        parse_mode: "Markdown",
-        reply_markup: {
-          force_reply: true,
-          selective: true,
-        },
-      }
-    );
-
-    // Track for reply handling
-    this.pendingRejections.set(reasonMessage.message_id, {
-      planId,
-      messageId: query.message.message_id,
-    });
-
-    logger.debug("Rejection reason requested", { planId, userId });
-  }
-
-  /**
-   * Handle view full plan request.
-   */
-  private async handleViewFull(
-    query: TelegramBot.CallbackQuery,
-    planId: string
-  ): Promise<void> {
-    if (!this.bot) return;
-
-    const storedPlan = this.storedPlans.get(planId);
-
-    if (!storedPlan) {
-      await this.bot.answerCallbackQuery(query.id, {
-        text: "Plan no longer available",
-        show_alert: true,
-      });
-      return;
-    }
-
-    await this.bot.answerCallbackQuery(query.id, {
-      text: "Sending full plan...",
-    });
-
-    // Send full plan - split into multiple messages if needed
-    const fullPlan = storedPlan.plan;
-
-    if (fullPlan.length <= TELEGRAM_MESSAGE_LIMIT) {
-      await this.bot.sendMessage(
-        this.chatId,
-        `📄 *Full Plan for ${escapeMarkdown(storedPlan.ticketId)}*\n\n${escapeMarkdown(fullPlan)}`,
-        { parse_mode: "Markdown" }
-      );
-    } else {
-      // Send as document for very long plans
-      const buffer = Buffer.from(fullPlan, "utf-8");
-      await this.bot.sendDocument(
-        this.chatId,
-        buffer,
-        {
-          caption: `Full plan for ${storedPlan.ticketId} - ${storedPlan.ticketTitle}`,
-        },
-        {
-          filename: `plan-${storedPlan.ticketId}.txt`,
-          contentType: "text/plain",
+    } else if (pending.type === "approval") {
+      // Approval poll answer
+      if (selectedOption.value === "approve") {
+        if (this.bot) {
+          await this.bot.sendMessage(
+            this.chatId,
+            `✅ *Plan Approved* by @${escapeMarkdown(respondedBy)}`,
+            { parse_mode: "Markdown" }
+          );
         }
-      );
-    }
 
-    logger.debug("Sent full plan", { planId });
-  }
+        if (this.onApproval) {
+          this.onApproval({
+            planId: pending.planId,
+            approved: true,
+            respondedBy,
+            respondedAt: new Date(),
+          });
+        }
 
-  /**
-   * Handle question answer from inline keyboard.
-   */
-  private async handleQuestionAnswer(
-    query: TelegramBot.CallbackQuery,
-    questionId: string,
-    answer: string,
-    respondedBy: string
-  ): Promise<void> {
-    if (!this.bot || !query.message) return;
+        this.storedPlans.delete(pending.planId);
+        logger.debug("Plan approved via poll", { planId: pending.planId, respondedBy });
+      } else {
+        // Reject or Provide Feedback - ask for reason via reply
+        const userId = pollAnswer.user.id;
+        this.awaitingRejectionReason.set(userId, pending.planId);
 
-    // Answer callback query
-    await this.bot.answerCallbackQuery(query.id, {
-      text: "Answer recorded",
-    });
+        const prompt = selectedOption.value === "reject"
+          ? "Please reply with the rejection reason:"
+          : "Please reply with your feedback:";
 
-    // Edit message to show answer
-    await this.bot.editMessageText(
-      `✅ *Question Answered*\n_Answer: ${escapeMarkdown(answer)}_\n_By @${escapeMarkdown(respondedBy)}_`,
-      {
-        chat_id: this.chatId,
-        message_id: query.message.message_id,
-        parse_mode: "Markdown",
+        if (this.bot) {
+          const reasonMsg = await this.bot.sendMessage(
+            this.chatId,
+            `@${escapeMarkdown(respondedBy)} ${prompt}`,
+            {
+              parse_mode: "Markdown",
+              reply_markup: {
+                force_reply: true,
+                selective: true,
+              },
+            }
+          );
+
+          this.pendingRejections.set(reasonMsg.message_id, {
+            planId: pending.planId,
+            messageId: reasonMsg.message_id,
+          });
+        }
+
+        logger.debug("Awaiting rejection/feedback reason", {
+          planId: pending.planId,
+          action: selectedOption.value,
+          respondedBy,
+        });
       }
-    );
-
-    // Emit question response
-    if (this.onQuestionResponse) {
-      this.onQuestionResponse({
-        questionId,
-        answer,
-        respondedBy,
-        respondedAt: new Date(),
-      });
     }
-
-    logger.debug("Question answered via button", { questionId, answer, respondedBy });
   }
 
   /**
