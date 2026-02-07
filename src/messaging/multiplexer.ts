@@ -299,7 +299,7 @@ class MultiplexerImpl
         } catch (error) {
           const err =
             error instanceof Error ? error : new Error(String(error));
-          logger.warn(`Failed to send status to ${name}`, {
+          logger.error(`Failed to send status to ${name}`, {
             error: err.message,
           });
           this.emit("error", err, name);
@@ -343,7 +343,7 @@ class MultiplexerImpl
 
         try {
           await provider.sendPlanForApproval(plan);
-          logger.debug(`Sent plan for approval to ${name}`, {
+          logger.info(`Sent plan for approval to ${name}`, {
             planId: plan.planId,
           });
         } catch (error) {
