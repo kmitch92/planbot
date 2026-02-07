@@ -2,7 +2,7 @@
   "name": "planbot",
   "version": "0.1.0",
   "type": "module",
-  "description": "Planning bot for messaging platforms",
+  "description": "Autonomous ticket execution system powered by Claude CLI",
   "main": "./dist/cli/index.js",
   "bin": {
     "planbot": "./dist/cli/index.js"

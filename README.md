@@ -47,24 +47,17 @@ PLANBOT_WEBHOOK_SECRET=...
 planbot init
 ```
 
-This creates a `.planbot/` directory and a sample `tickets.json` file.
+This creates a `.planbot/` directory and a sample `tickets.yaml` file.
 
-2. Edit `tickets.json` (or create `tickets.yaml`) with your tickets:
+2. Edit `tickets.yaml` with your tickets:
 
-```json
-{
-  "config": {
-    "autoApprove": false
-  },
-  "tickets": [
-    {
-      "id": "task-001",
-      "title": "Add user authentication",
-      "description": "Implement JWT-based auth with login/logout endpoints",
-      "status": "pending"
-    }
-  ]
-}
+```yaml
+tickets:
+  - id: task-001
+    title: Add user authentication
+    description: |
+      Implement JWT-based auth with login/logout endpoints
+    status: pending
 ```
 
 3. Start processing:
@@ -74,6 +67,20 @@ planbot start
 ```
 
 Planbot will generate a plan for each ticket, request approval, and execute approved plans.
+
+## How It Works
+
+Planbot follows a structured lifecycle for each ticket in the queue:
+
+1. **Load** — Reads your `tickets.yaml` (or `tickets.json`), validates schemas and dependency graph
+2. **Plan** — Sends ticket description to Claude CLI, which generates an implementation plan
+3. **Approve** — Presents the plan for human review via terminal (and optionally Telegram/Slack/Discord)
+4. **Execute** — Feeds the approved plan back to Claude CLI for autonomous implementation
+5. **Track** — Persists state to `.planbot/` so you can pause, resume, or inspect progress
+
+Tickets with `planMode: false` skip steps 2-3 and execute directly from their description.
+
+In **continuous mode** (`--continuous`), planbot loops back to accept new plans from stdin after the queue empties.
 
 ## Configuration
 
@@ -171,14 +178,20 @@ Each ticket supports:
 
 ### Core Commands
 
-#### `planbot init`
+#### `planbot init [options]`
 Initialize a new planbot project.
 
 ```bash
 planbot init
+planbot init --simple
+planbot init --force
 ```
 
-Creates `.planbot/` directory and sample tickets file.
+Creates `.planbot/` directory and sample `tickets.yaml` file.
+
+**Options:**
+- `--simple`: Use simple template without hooks or example config
+- `--force`: Overwrite existing configuration
 
 #### `planbot start [options]`
 Start processing the ticket queue.
@@ -186,13 +199,16 @@ Start processing the ticket queue.
 ```bash
 planbot start
 planbot start --auto-approve
-planbot start --skip-permissions --model opus
+planbot start --dry-run
+planbot start custom-tickets.yaml --verbose
 ```
 
 **Options:**
+- `[tickets-file]`: Path to tickets file (default: `tickets.yaml`)
+- `--dry-run`: Simulate execution without making changes
 - `--auto-approve`: Auto-approve all plans (bypass approval workflow)
 - `--skip-permissions`: Skip permission prompts (dangerous)
-- `--model <model>`: Override config model (`sonnet`, `opus`, `haiku`)
+- `-v, --verbose`: Enable verbose Claude output logging to `.planbot/logs/`
 - `-C, --continuous`: Keep running and prompt for new plans after completion
 - `--continuous-timeout <ms>`: Timeout for next plan prompt (default: 1 hour)
 
@@ -309,13 +325,18 @@ planbot logs --tail 50
 planbot logs --follow
 ```
 
-#### `planbot validate`
+#### `planbot validate [tickets-file]`
 Validate tickets file syntax.
 
 ```bash
 planbot validate
-planbot validate --file custom-tickets.yaml
+planbot validate custom-tickets.yaml
+planbot validate --json
 ```
+
+**Options:**
+- `[tickets-file]`: Path to tickets file (default: `tickets.yaml`)
+- `--json`: Output validation results as JSON
 
 #### `planbot plan <ticketId>`
 Generate plan for a ticket without executing.
@@ -423,6 +444,8 @@ messaging:
 ```bash
 export TELEGRAM_BOT_TOKEN="..."
 ```
+
+**Auto-detection:** If `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` are set in your environment (or `.env` file), Telegram notifications are enabled automatically — no `messaging` config block needed.
 
 ## Hooks
 
@@ -598,17 +621,33 @@ curl -X POST http://localhost:3847/planbot/webhook/approve \
 ## Development
 
 ```bash
-# Development mode with auto-reload
-npm run dev
+npm run dev       # Development mode with auto-reload (tsx watch)
+npm test          # Run tests (vitest)
+npm run build     # Build TypeScript
+npm run lint      # Lint code (eslint)
+```
 
-# Run tests
-npm test
+### Project Structure
 
-# Build TypeScript
-npm run build
-
-# Lint code
-npm run lint
+```
+src/
+├── cli/              # Commander.js CLI commands
+│   ├── commands/     # Individual command implementations
+│   └── index.ts      # Program entry point
+├── core/             # Business logic
+│   ├── claude.ts     # Claude CLI wrapper (spawn, stream, parse)
+│   ├── hooks.ts      # Hook executor (shell + prompt hooks)
+│   ├── orchestrator.ts  # Queue processor and ticket lifecycle
+│   ├── schemas.ts    # Zod schemas (tickets, config, hooks)
+│   └── state.ts      # .planbot/ state persistence
+├── messaging/        # Notification providers
+│   ├── multiplexer.ts   # Fan-out to multiple providers
+│   ├── terminal.ts      # Interactive terminal provider
+│   ├── telegram.ts      # Telegram bot provider
+│   ├── slack.ts         # Slack socket-mode provider
+│   ├── discord.ts       # Discord.js provider
+│   └── webhook-server.ts  # Express webhook API
+└── utils/            # Shared utilities (fs, logger)
 ```
 
 ## License
