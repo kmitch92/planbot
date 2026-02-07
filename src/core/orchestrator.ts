@@ -40,6 +40,7 @@ export interface OrchestratorEvents {
   "ticket:completed": [ticket: Ticket];
   "ticket:failed": [ticket: Ticket, error: string];
   "ticket:skipped": [ticket: Ticket];
+  "ticket:output": [ticket: Ticket, text: string];
   question: [ticket: Ticket, question: string];
   "queue:start": [];
   "queue:complete": [];
@@ -213,6 +214,11 @@ class OrchestratorImpl
     await this.saveTicketsFile();
 
     this.emit("ticket:skipped", ticket);
+    this.multiplexer.broadcastStatus({
+      ticketId: ticket.id,
+      ticketTitle: ticket.title,
+      status: "skipped",
+    }).catch(err => logger.warn("Failed to broadcast status", { error: String(err) }));
   }
 
   async approveTicket(ticketId: string): Promise<void> {
@@ -320,6 +326,12 @@ class OrchestratorImpl
         await this.saveTicketsFile();
 
         this.emit("ticket:failed", ticket, error.message);
+        this.multiplexer.broadcastStatus({
+          ticketId: ticket.id,
+          ticketTitle: ticket.title,
+          status: "failed",
+          error: error.message,
+        }).catch(err => logger.warn("Failed to broadcast status", { error: String(err) }));
         this.emit("error", error);
 
         if (!config.continueOnError) {
@@ -410,6 +422,11 @@ class OrchestratorImpl
       ticket.status = "skipped";
       await this.saveTicketsFile();
       this.emit("ticket:skipped", ticket);
+      this.multiplexer.broadcastStatus({
+        ticketId: ticket.id,
+        ticketTitle: ticket.title,
+        status: "skipped",
+      }).catch(err => logger.warn("Failed to broadcast status", { error: String(err) }));
     }
   }
 
@@ -454,6 +471,12 @@ class OrchestratorImpl
     const mergedHooks = hookExecutor.mergeHooks(globalHooks, ticket.hooks);
 
     this.emit("ticket:start", ticket);
+    this.multiplexer.broadcastStatus({
+      ticketId: ticket.id,
+      ticketTitle: ticket.title,
+      status: "started",
+      message: "Processing started",
+    }).catch(err => logger.warn("Failed to broadcast status", { error: String(err) }));
 
     // Execute beforeEach hooks
     await this.executeHooks(mergedHooks, "beforeEach", {
@@ -509,11 +532,22 @@ class OrchestratorImpl
           ticketStatus: "skipped",
         });
         this.emit("ticket:skipped", ticket);
+        this.multiplexer.broadcastStatus({
+          ticketId: ticket.id,
+          ticketTitle: ticket.title,
+          status: "skipped",
+        }).catch(err => logger.warn("Failed to broadcast status", { error: String(err) }));
         logger.clearContext();
         return;
       }
 
       this.emit("ticket:approved", ticket);
+      this.multiplexer.broadcastStatus({
+        ticketId: ticket.id,
+        ticketTitle: ticket.title,
+        status: "started",
+        message: "Plan approved, execution starting",
+      }).catch(err => logger.warn("Failed to broadcast status", { error: String(err) }));
 
       // Phase: Executing
       await this.executeTicket(ticket, plan, config, mergedHooks);
@@ -621,6 +655,11 @@ class OrchestratorImpl
       ticket.status = "completed";
       await this.saveTicketsFile();
       this.emit("ticket:completed", ticket);
+      this.multiplexer.broadcastStatus({
+        ticketId: ticket.id,
+        ticketTitle: ticket.title,
+        status: "completed",
+      }).catch(err => logger.warn("Failed to broadcast status", { error: String(err) }));
       return;
     }
 
@@ -657,6 +696,11 @@ class OrchestratorImpl
             ticketTitle: ticket.title,
           });
           this.emit("ticket:completed", ticket);
+          this.multiplexer.broadcastStatus({
+            ticketId: ticket.id,
+            ticketTitle: ticket.title,
+            status: "completed",
+          }).catch(err => logger.warn("Failed to broadcast status", { error: String(err) }));
           return;
         }
 
@@ -715,6 +759,11 @@ class OrchestratorImpl
         ticketTitle: ticket.title,
       });
       this.emit("ticket:completed", ticket);
+      this.multiplexer.broadcastStatus({
+        ticketId: ticket.id,
+        ticketTitle: ticket.title,
+        status: "completed",
+      }).catch(err => logger.warn("Failed to broadcast status", { error: String(err) }));
     } else {
       throw new Error(result.error ?? "Session resume failed");
     }
@@ -726,11 +775,9 @@ class OrchestratorImpl
 
   private handleClaudeEvent(ticket: Ticket, event: { type: string; message?: string }): void {
     logger.debug("Claude event", { type: event.type });
-    stateManager.appendLog(
-      this.projectRoot,
-      ticket.id,
-      `[${event.type}] ${event.message ?? ""}`
-    ).catch((err) => {
+    const eventLine = `[${event.type}] ${event.message ?? ""}`;
+    this.emit("ticket:output", ticket, eventLine);
+    stateManager.appendLog(this.projectRoot, ticket.id, eventLine).catch((err) => {
       logger.warn("Failed to append log", { error: String(err) });
     });
   }
@@ -801,6 +848,7 @@ class OrchestratorImpl
   }
 
   private handleOutput(ticket: Ticket, text: string): void {
+    this.emit("ticket:output", ticket, text);
     stateManager.appendLog(this.projectRoot, ticket.id, text).catch((err) => {
       logger.warn("Failed to append output log", { error: String(err) });
     });
