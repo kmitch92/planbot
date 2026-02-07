@@ -81,18 +81,18 @@ describe('Input Length Validation', () => {
   });
 
   describe('PromptHookActionSchema length limits', () => {
-    it('accepts prompt within 50000 character limit', () => {
+    it('accepts command within 50000 character limit', () => {
       const action = {
         type: 'prompt' as const,
-        prompt: 'a'.repeat(50000),
+        command: 'a'.repeat(50000),
       };
       expect(() => PromptHookActionSchema.parse(action)).not.toThrow();
     });
 
-    it('rejects prompt exceeding 50000 characters', () => {
+    it('rejects command exceeding 50000 characters', () => {
       const action = {
         type: 'prompt' as const,
-        prompt: 'a'.repeat(50001),
+        command: 'a'.repeat(50001),
       };
       expect(() => PromptHookActionSchema.parse(action)).toThrow();
     });

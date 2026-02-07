@@ -299,12 +299,12 @@ function createHookExecutor(): HookExecutor {
       // Prompt hooks are not executable - they are hints for the AI
       // Return success with the prompt as output for the orchestrator
       logger.debug("Returning prompt hook for AI injection", {
-        promptLength: action.prompt.length,
+        promptLength: action.command.length,
       });
 
       return {
         success: true,
-        output: action.prompt,
+        output: action.command,
       };
     },
 

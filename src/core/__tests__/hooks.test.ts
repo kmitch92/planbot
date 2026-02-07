@@ -23,8 +23,8 @@ function createShellAction(command: string): HookAction {
   return { type: "shell", command };
 }
 
-function createPromptAction(prompt: string): HookAction {
-  return { type: "prompt", prompt };
+function createPromptAction(command: string): HookAction {
+  return { type: "prompt", command };
 }
 
 function createContext(overrides: Partial<HookContext> = {}): HookContext {

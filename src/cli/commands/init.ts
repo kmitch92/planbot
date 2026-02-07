@@ -38,7 +38,7 @@ const ADVANCED_TEMPLATE = `# Planbot Tickets
 #
 # Hook types:
 #   shell  — runs a shell command    { type: shell, command: "..." }
-#   prompt — sends prompt to Claude  { type: prompt, prompt: "..." }
+#   prompt — sends prompt to Claude  { type: prompt, command: "..." }
 #
 # Hook events:
 #   beforeAll      — once before processing any tickets
@@ -81,7 +81,7 @@ hooks:
 
   # onPlanGenerated:
   #   - type: prompt
-  #     prompt: Review the generated plan and identify any risks or missing steps
+  #     command: Review the generated plan and identify any risks or missing steps
   #   - type: shell
   #     command: cat "\${PLANBOT_PLAN_PATH}"
 

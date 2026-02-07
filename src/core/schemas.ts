@@ -96,7 +96,7 @@ export const ShellHookActionSchema = z.object({
 
 export const PromptHookActionSchema = z.object({
   type: z.literal("prompt"),
-  prompt: z.string().min(1).max(50000),
+  command: z.string().min(1).max(50000),
 });
 
 export const HookActionSchema = z.discriminatedUnion("type", [

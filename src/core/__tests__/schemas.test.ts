@@ -308,13 +308,13 @@ describe("Hook Schemas", () => {
   it("validates PromptHookAction successfully", () => {
     const result = PromptHookActionSchema.safeParse({
       type: "prompt",
-      prompt: "Review the changes",
+      command: "Review the changes",
     });
 
     expect(result.success).toBe(true);
     if (result.success) {
       expect(result.data.type).toBe("prompt");
-      expect(result.data.prompt).toBe("Review the changes");
+      expect(result.data.command).toBe("Review the changes");
     }
   });
 
@@ -330,7 +330,7 @@ describe("Hook Schemas", () => {
   it("validates HooksSchema with all optional fields", () => {
     const result = HooksSchema.safeParse({
       beforeAll: [{ type: "shell", command: "npm install" }],
-      afterEach: [{ type: "prompt", prompt: "Verify completion" }],
+      afterEach: [{ type: "prompt", command: "Verify completion" }],
     });
 
     expect(result.success).toBe(true);
