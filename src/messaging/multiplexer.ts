@@ -221,11 +221,7 @@ class MultiplexerImpl
       throw new Error("No messaging providers registered");
     }
 
-    // Broadcast to all providers
-    await this.broadcastPlan(plan);
-
-    // Wait for first response
-    return new Promise((resolve, reject) => {
+    return new Promise<ApprovalResponse>((resolve, reject) => {
       const timeoutId = setTimeout(() => {
         this.pendingApprovals.delete(plan.planId);
         const error = new TimeoutError(
@@ -237,11 +233,20 @@ class MultiplexerImpl
         reject(error);
       }, this.approvalTimeout);
 
+      // Register BEFORE broadcasting so callbacks can resolve immediately
       this.pendingApprovals.set(plan.planId, {
         planId: plan.planId,
         resolve,
         reject,
         timeoutId,
+      });
+
+      // Broadcast without awaiting — providers handle responses asynchronously
+      this.broadcastPlan(plan).catch((err) => {
+        logger.error("Failed to broadcast plan", {
+          planId: plan.planId,
+          error: err instanceof Error ? err.message : String(err),
+        });
       });
     });
   }
@@ -251,11 +256,7 @@ class MultiplexerImpl
       throw new Error("No messaging providers registered");
     }
 
-    // Broadcast to all providers
-    await this.broadcastQuestion(question);
-
-    // Wait for first response
-    return new Promise((resolve, reject) => {
+    return new Promise<QuestionResponse>((resolve, reject) => {
       const timeoutId = setTimeout(() => {
         this.pendingQuestions.delete(question.questionId);
         const error = new TimeoutError(
@@ -267,11 +268,20 @@ class MultiplexerImpl
         reject(error);
       }, this.questionTimeout);
 
+      // Register BEFORE broadcasting so callbacks can resolve immediately
       this.pendingQuestions.set(question.questionId, {
         questionId: question.questionId,
         resolve,
         reject,
         timeoutId,
+      });
+
+      // Broadcast without awaiting
+      this.broadcastQuestion(question).catch((err) => {
+        logger.error("Failed to broadcast question", {
+          questionId: question.questionId,
+          error: err instanceof Error ? err.message : String(err),
+        });
       });
     });
   }
