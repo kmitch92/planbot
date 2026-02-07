@@ -25,6 +25,20 @@ npm link  # for global CLI access
 
 **Requirements**: Node.js >= 18.0.0
 
+### Environment Variables
+
+Planbot automatically loads environment variables from a `.env` file in your project root (via `dotenv`). This is useful for messaging tokens and webhook secrets:
+
+```bash
+# .env
+SLACK_BOT_TOKEN=xoxb-...
+SLACK_APP_TOKEN=xapp-...
+DISCORD_BOT_TOKEN=...
+TELEGRAM_BOT_TOKEN=...
+TELEGRAM_CHAT_ID=...
+PLANBOT_WEBHOOK_SECRET=...
+```
+
 ## Quick Start
 
 1. Initialize a new planbot project:
@@ -40,7 +54,6 @@ This creates a `.planbot/` directory and a sample `tickets.json` file.
 ```json
 {
   "config": {
-    "model": "sonnet",
     "autoApprove": false
   },
   "tickets": [
@@ -70,7 +83,7 @@ Configuration lives in the `config` section of your tickets file (`tickets.yaml`
 
 ```yaml
 config:
-  # Claude model selection
+  # Claude model override (optional — omit to use CLI default)
   model: sonnet  # Options: "sonnet" | "opus" | "haiku"
 
   # Budget limit per ticket in USD
@@ -84,6 +97,10 @@ config:
 
   # Auto-approve plans without human review (use with caution)
   autoApprove: false
+
+  # Generate plan before execution (default: true)
+  # When false, tickets execute directly from description
+  planMode: true
 
   # Skip permission prompts (dangerous mode)
   skipPermissions: false
@@ -101,7 +118,7 @@ config:
 
   # Timeout configurations (milliseconds)
   timeouts:
-    planGeneration: 300000   # 5 minutes
+    planGeneration: 900000   # 15 minutes
     execution: 1800000       # 30 minutes
     approval: 86400000       # 24 hours
     question: 3600000        # 1 hour
@@ -146,6 +163,7 @@ Each ticket supports:
 | `dependencies` | string[] | - | IDs of tickets that must complete first |
 | `hooks` | object | - | Ticket-specific hooks |
 | `metadata` | object | - | Arbitrary metadata for extensibility |
+| `planMode` | boolean | - | Override global planMode for this ticket |
 
 **Status values**: `pending`, `planning`, `awaiting_approval`, `approved`, `executing`, `completed`, `failed`, `skipped`
 
@@ -338,6 +356,10 @@ All commands support:
 
 Planbot supports Slack, Discord, and Telegram for notifications, approvals, and question responses.
 
+### Environment Variable Substitution
+
+Messaging configuration values support `${VAR_NAME}` substitution syntax. Variable names must use uppercase letters, numbers, and underscores (e.g., `${SLACK_BOT_TOKEN}`). Values are resolved at runtime from the process environment (including `.env` file).
+
 ### Slack
 
 ```yaml
@@ -437,7 +459,7 @@ hooks:
 hooks:
   onPlanGenerated:
     - type: prompt
-      prompt: "Review this plan for security issues"
+      command: "Review this plan for security issues"
 ```
 
 ### Environment Variables in Hooks
