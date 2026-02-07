@@ -113,6 +113,7 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
     return new Promise((resolve) => {
       const args = [
         '--print',
+        '--verbose',
         '--input-format', 'stream-json',
         '--output-format', 'stream-json',
         '--permission-mode', 'plan',
@@ -387,6 +388,7 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
     return new Promise((resolve) => {
       const args = [
         '--print',
+        '--verbose',
         '--input-format', 'stream-json',
         '--output-format', 'stream-json',
       ];
