@@ -144,6 +144,8 @@ export const ConfigSchema = z.object({
   continueOnError: z.boolean().default(false),
   /** Automatically approve plans without human review */
   autoApprove: z.boolean().default(false),
+  /** Whether to generate a plan before execution (default: true). When false, tickets execute directly from their description. */
+  planMode: z.boolean().default(true),
   /** Skip permission prompts (dangerous mode) */
   skipPermissions: z.boolean().default(false),
   /** Messaging provider configuration */
@@ -188,6 +190,8 @@ export const TicketSchema = z.object({
   hooks: HooksSchema.partial().optional(),
   /** Arbitrary metadata for extensibility */
   metadata: z.record(z.string(), z.unknown()).optional(),
+  /** Override global planMode for this ticket. When false, skips plan generation and executes directly. */
+  planMode: z.boolean().optional(),
 });
 
 // =============================================================================
