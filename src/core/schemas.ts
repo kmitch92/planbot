@@ -198,6 +198,8 @@ export const TicketSchema = z.object({
   metadata: z.record(z.string(), z.unknown()).optional(),
   /** Override global planMode for this ticket. When false, skips plan generation and executes directly. */
   planMode: z.boolean().optional(),
+  /** Whether the ticket has been completed (persisted to YAML for restart resilience) */
+  complete: z.boolean().default(false),
 });
 
 // =============================================================================
