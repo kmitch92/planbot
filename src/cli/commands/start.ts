@@ -23,8 +23,10 @@ interface StartOptions {
   dryRun?: boolean;
   autoApprove?: boolean;
   skipPermissions?: boolean;
+  allowShellHooks?: boolean;
   continuous?: boolean;
   continuousTimeout?: number;
+  verbose?: boolean;
 }
 
 // =============================================================================
@@ -188,8 +190,10 @@ export function createStartCommand(): Command {
     .option('--dry-run', 'Simulate execution without making changes')
     .option('--auto-approve', 'Automatically approve all plans')
     .option('--skip-permissions', 'Skip Claude permission prompts (dangerous)')
+    .option('--allow-shell-hooks', 'Allow shell hook execution from tickets.yaml')
     .option('-C, --continuous', 'Keep running and prompt for new plans after completion')
     .option('--continuous-timeout <ms>', 'Timeout for next plan prompt (default: 1 hour)', parseInt)
+    .option('-v, --verbose', 'Enable verbose Claude output logging to .planbot/logs/')
     .action(async (ticketsFile: string, options: StartOptions) => {
       const cwd = process.cwd();
       const ticketsPath = resolve(cwd, ticketsFile);
@@ -235,6 +239,9 @@ export function createStartCommand(): Command {
         }
         if (options.skipPermissions !== undefined) {
           config.skipPermissions = options.skipPermissions;
+        }
+        if (options.allowShellHooks !== undefined) {
+          config.allowShellHooks = options.allowShellHooks;
         }
 
         // Initialize .planbot if needed
@@ -289,6 +296,7 @@ export function createStartCommand(): Command {
           ticketsFile: ticketsPath,
           multiplexer,
           dryRun: options.dryRun,
+          verbose: options.verbose,
         });
 
         // Set up event handlers

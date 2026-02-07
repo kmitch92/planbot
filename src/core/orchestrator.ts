@@ -29,6 +29,7 @@ export interface OrchestratorOptions {
   ticketsFile: string;
   multiplexer: Multiplexer;
   dryRun?: boolean;
+  verbose?: boolean;
 }
 
 export interface OrchestratorEvents {
@@ -91,6 +92,7 @@ class OrchestratorImpl
   private readonly ticketsFilePath: string;
   private readonly multiplexer: Multiplexer;
   private readonly dryRun: boolean;
+  private readonly verbose: boolean;
 
   private ticketsFile: TicketsFile | null = null;
   private state: State | null = null;
@@ -108,6 +110,7 @@ class OrchestratorImpl
     this.ticketsFilePath = options.ticketsFile;
     this.multiplexer = options.multiplexer;
     this.dryRun = options.dryRun ?? false;
+    this.verbose = options.verbose ?? false;
   }
 
   // ===========================================================================
@@ -584,6 +587,7 @@ class OrchestratorImpl
       model: config.model,
       timeout: config.timeouts.planGeneration,
       cwd: this.projectRoot,
+      verbose: this.verbose,
     }, (text) => this.handleOutput(ticket, text));
 
     if (!result.success) {
@@ -685,6 +689,7 @@ class OrchestratorImpl
             skipPermissions: config.skipPermissions,
             timeout: config.timeouts.execution,
             cwd: this.projectRoot,
+            verbose: this.verbose,
           },
           {
             onEvent: (event) => this.handleClaudeEvent(ticket, event),
@@ -753,6 +758,7 @@ class OrchestratorImpl
         skipPermissions: config.skipPermissions,
         timeout: config.timeouts.execution,
         cwd: this.projectRoot,
+        verbose: this.verbose,
       },
       {
         onEvent: (event) => this.handleClaudeEvent(ticket, event),
@@ -917,7 +923,8 @@ class OrchestratorImpl
     name: keyof Hooks,
     context: HookContext
   ) {
-    return hookExecutor.executeNamed(hooks, name, context);
+    const allowShellHooks = this.ticketsFile?.config?.allowShellHooks ?? false;
+    return hookExecutor.executeNamed(hooks, name, context, { allowShellHooks });
   }
 
   private findTicket(ticketId: string): Ticket | undefined {

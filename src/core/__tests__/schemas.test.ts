@@ -258,6 +258,7 @@ describe("ConfigSchema", () => {
     expect(result.continueOnError).toBe(false);
     expect(result.autoApprove).toBe(false);
     expect(result.skipPermissions).toBe(false);
+    expect(result.allowShellHooks).toBe(false);
     expect(result.webhook.enabled).toBe(false);
     expect(result.timeouts.planGeneration).toBe(300000);
   });

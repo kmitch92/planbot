@@ -148,6 +148,8 @@ export const ConfigSchema = z.object({
   planMode: z.boolean().default(true),
   /** Skip permission prompts (dangerous mode) */
   skipPermissions: z.boolean().default(false),
+  /** Enable shell hook execution (default: false for security) */
+  allowShellHooks: z.boolean().default(false),
   /** Messaging provider configuration */
   messaging: MessagingConfigSchema.optional(),
   /** Webhook server configuration */
