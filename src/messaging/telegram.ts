@@ -62,6 +62,28 @@ export class TelegramApiClient {
     }
     return data.result;
   }
+
+  async sendDocument(
+    chatId: string,
+    fileContent: Buffer,
+    filename: string,
+    caption?: string
+  ): Promise<{ message_id: number }> {
+    const formData = new FormData();
+    formData.set("chat_id", chatId);
+    formData.set("document", new Blob([fileContent]), filename);
+    if (caption) formData.set("caption", caption);
+
+    const response = await fetch(`${this.baseUrl}/sendDocument`, {
+      method: "POST",
+      body: formData,
+    });
+    const data = await response.json();
+    if (!data.ok) {
+      throw new Error(data.description ?? "sendDocument failed");
+    }
+    return data.result;
+  }
 }
 
 const APPROVAL_WORDS = new Set([
@@ -229,16 +251,25 @@ class TelegramProvider implements MessagingProvider {
       );
     }
 
-    // Send plan content chunks
-    const chunks = splitMessage(plan.plan, TELEGRAM_MESSAGE_LIMIT - 100);
-    for (const chunk of chunks) {
+    // Send plan content — document for long plans, inline for short
+    if (plan.plan.length > TELEGRAM_MESSAGE_LIMIT) {
       try {
-        await this.api.sendMessage(this.chatId, chunk);
+        const buffer = Buffer.from(plan.plan);
+        await this.api.sendDocument(
+          this.chatId,
+          buffer,
+          `plan-${plan.ticketId}.md`,
+          `Plan for ${plan.ticketId}`
+        );
       } catch (error) {
-        logger.warn("Failed to send plan chunk", {
+        logger.warn("Failed to send plan as document, falling back to chunks", {
           error: error instanceof Error ? error.message : String(error),
         });
+        // Fallback to chunked messages
+        await this.sendPlanChunks(plan.plan);
       }
+    } else {
+      await this.sendPlanChunks(plan.plan);
     }
 
     // Send approval prompt — this is the message we track
@@ -256,6 +287,19 @@ class TelegramProvider implements MessagingProvider {
     });
 
     this.ensurePolling();
+  }
+
+  private async sendPlanChunks(planText: string): Promise<void> {
+    const chunks = splitMessage(planText, TELEGRAM_MESSAGE_LIMIT - 100);
+    for (const chunk of chunks) {
+      try {
+        await this.api.sendMessage(this.chatId, chunk);
+      } catch (error) {
+        logger.warn("Failed to send plan chunk", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
   }
 
   async sendQuestion(question: QuestionMessage): Promise<void> {

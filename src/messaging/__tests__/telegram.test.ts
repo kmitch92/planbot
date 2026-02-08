@@ -213,6 +213,44 @@ describe("TelegramApiClient", () => {
     expect(result).toEqual(updates);
     expect(result).toHaveLength(2);
   });
+
+  // ---------------------------------------------------------------------------
+  // sendDocument
+  // ---------------------------------------------------------------------------
+
+  it("sendDocument calls correct URL with multipart form data", async () => {
+    const mockResponse = {
+      ok: true,
+      result: { message_id: 55 },
+    };
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      createFetchResponse(mockResponse)
+    );
+
+    const result = await client.sendDocument("12345", Buffer.from("# Plan content"), "plan.md", "Plan for review");
+
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      `${BASE_URL}/sendDocument`,
+      expect.objectContaining({ method: "POST" })
+    );
+
+    // Verify FormData was used (body should be FormData, not JSON)
+    const fetchCall = vi.mocked(globalThis.fetch).mock.calls[0];
+    const requestInit = fetchCall[1] as RequestInit;
+    expect(requestInit.body).toBeInstanceOf(FormData);
+    expect(result).toEqual({ message_id: 55 });
+  });
+
+  it("sendDocument throws on non-ok response", async () => {
+    const errorResponse = { ok: false, description: "Bad Request: document is too large" };
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      createFetchResponse(errorResponse, false, 400)
+    );
+
+    await expect(
+      client.sendDocument("12345", Buffer.from("content"), "file.md")
+    ).rejects.toThrow("Bad Request: document is too large");
+  });
 });
 
 // =============================================================================
@@ -514,6 +552,82 @@ describe("TelegramProvider - sendPlanForApproval", () => {
     await vi.advanceTimersByTimeAsync(3500);
 
     expect(getUpdatesSpy.mock.calls.length).toBeGreaterThan(callsBefore);
+  });
+
+  it("sends long plans as a document file instead of chunked messages", async () => {
+    // Create a plan longer than TELEGRAM_MESSAGE_LIMIT (4096)
+    const longPlan = "Step 1: " + "A".repeat(5000) + "\nStep 2: " + "B".repeat(3000);
+
+    // Mock sendDocument on the api instance
+    const internals = getInternals(provider);
+    vi.spyOn(internals.api, "sendDocument").mockResolvedValue({ message_id: messageIdCounter++ });
+
+    await provider.sendPlanForApproval({
+      planId: "plan-doc-1",
+      ticketId: "TICK-DOC",
+      ticketTitle: "Long plan doc test",
+      plan: longPlan,
+    });
+
+    // Should have called sendDocument for the plan content
+    expect(internals.api.sendDocument).toHaveBeenCalledWith(
+      "12345",
+      expect.any(Buffer),
+      expect.stringContaining(".md"),
+      expect.any(String)
+    );
+
+    // The buffer should contain the full plan
+    const docCall = vi.mocked(internals.api.sendDocument).mock.calls[0];
+    const buffer = docCall[1] as Buffer;
+    expect(buffer.toString()).toBe(longPlan);
+  });
+
+  it("sends short plans inline without document upload", async () => {
+    const shortPlan = "Step 1: Do the thing\nStep 2: Verify";
+
+    const internals = getInternals(provider);
+    vi.spyOn(internals.api, "sendDocument").mockResolvedValue({ message_id: messageIdCounter++ });
+
+    await provider.sendPlanForApproval({
+      planId: "plan-inline-1",
+      ticketId: "TICK-INLINE",
+      ticketTitle: "Short plan inline test",
+      plan: shortPlan,
+    });
+
+    // Should NOT have called sendDocument for short plans
+    expect(internals.api.sendDocument).not.toHaveBeenCalled();
+
+    // Should have sent plan content via sendMessage
+    const sendMessageSpy = TelegramApiClient.prototype.sendMessage as ReturnType<typeof vi.fn>;
+    const sentTexts = sendMessageSpy.mock.calls.map((call: unknown[]) => call[1] as string);
+    const hasPlanContent = sentTexts.some((text: string) => text.includes("Do the thing"));
+    expect(hasPlanContent).toBe(true);
+  });
+
+  it("falls back to chunked messages if sendDocument fails", async () => {
+    const longPlan = "A".repeat(5000);
+
+    const internals = getInternals(provider);
+    vi.spyOn(internals.api, "sendDocument").mockRejectedValue(new Error("Upload failed"));
+
+    await provider.sendPlanForApproval({
+      planId: "plan-fallback-1",
+      ticketId: "TICK-FB",
+      ticketTitle: "Fallback test",
+      plan: longPlan,
+    });
+
+    // Should have fallen back to sendMessage chunks
+    const sendMessageSpy = TelegramApiClient.prototype.sendMessage as ReturnType<typeof vi.fn>;
+    // At least header + chunk(s) + prompt = 3+ messages
+    expect(sendMessageSpy.mock.calls.length).toBeGreaterThanOrEqual(3);
+
+    // Should still track for approval
+    const tracked = [...internals.trackedMessages.entries()];
+    const planEntry = tracked.find(([, v]) => v.type === "plan" && v.planId === "plan-fallback-1");
+    expect(planEntry).toBeDefined();
   });
 });
 
