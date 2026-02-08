@@ -70,10 +70,14 @@ export interface Orchestrator extends EventEmitter<OrchestratorEvents> {
 // Internal Types
 // =============================================================================
 
+interface ApprovalResult {
+  approved: boolean;
+  rejectionReason?: string;
+}
+
 interface PendingApprovalResolvers {
-  resolve: (approved: boolean) => void;
+  resolve: (result: ApprovalResult) => void;
   reject: (error: Error) => void;
-  reason?: string;
 }
 
 interface PendingQuestionResolvers {
@@ -235,7 +239,7 @@ class OrchestratorImpl
     }
 
     logger.info("Manually approving ticket", { ticketId });
-    pending.resolve(true);
+    pending.resolve({ approved: true });
     this.pendingApprovals.delete(planId);
   }
 
@@ -248,8 +252,7 @@ class OrchestratorImpl
     }
 
     logger.info("Manually rejecting ticket", { ticketId, reason });
-    pending.reason = reason;
-    pending.resolve(false);
+    pending.resolve({ approved: false, rejectionReason: reason });
     this.pendingApprovals.delete(planId);
   }
 
@@ -419,10 +422,13 @@ class OrchestratorImpl
       return this.processTicket(ticket, config, hooks);
     }
 
-    const approved = await this.waitForApproval(ticket, plan, config);
+    const result = await this.waitForApproval(ticket, plan, config);
 
-    if (approved) {
+    if (result.approved) {
       await this.executeTicket(ticket, plan, config, hooks);
+    } else if (result.rejectionReason && config.maxPlanRevisions > 0) {
+      // Rejection with feedback — enter revision loop
+      await this.processTicket(ticket, config, hooks, result.rejectionReason);
     } else {
       ticket.status = "skipped";
       await this.saveTicketsFile();
@@ -468,7 +474,8 @@ class OrchestratorImpl
   private async processTicket(
     ticket: Ticket,
     config: Config,
-    globalHooks?: Hooks
+    globalHooks?: Hooks,
+    initialFeedback?: string
   ): Promise<void> {
     logger.setContext({ ticketId: ticket.id });
     logger.info("Processing ticket", { title: ticket.title });
@@ -494,39 +501,78 @@ class OrchestratorImpl
     const usePlanMode = ticket.planMode ?? config.planMode;
 
     if (usePlanMode) {
-      // Phase: Planning
-      await this.updateState({ currentTicketId: ticket.id, currentPhase: "planning" });
-      ticket.status = "planning";
-      await this.saveTicketsFile();
+      let feedback: string | undefined = initialFeedback;
+      let approved = false;
+      const maxRevisions = config.maxPlanRevisions;
 
-      const plan = await this.generatePlan(ticket, config);
+      for (let attempt = 0; attempt <= maxRevisions; attempt++) {
+        // Phase: Planning
+        await this.updateState({ currentTicketId: ticket.id, currentPhase: "planning" });
+        ticket.status = "planning";
+        await this.saveTicketsFile();
 
-      // Save plan
-      const planPath = await stateManager.savePlan(this.projectRoot, ticket.id, plan);
+        const plan = await this.generatePlan(ticket, config, feedback);
 
-      // Execute onPlanGenerated hooks
-      await this.executeHooks(mergedHooks, "onPlanGenerated", {
-        ticketId: ticket.id,
-        ticketTitle: ticket.title,
-        plan,
-        planPath,
-      });
+        // Save plan
+        const planPath = await stateManager.savePlan(this.projectRoot, ticket.id, plan);
 
-      this.emit("ticket:plan-generated", ticket, plan);
+        // Execute onPlanGenerated hooks
+        await this.executeHooks(mergedHooks, "onPlanGenerated", {
+          ticketId: ticket.id,
+          ticketTitle: ticket.title,
+          plan,
+          planPath,
+        });
 
-      // Phase: Awaiting Approval
-      await this.updateState({ currentPhase: "awaiting_approval" });
-      ticket.status = "awaiting_approval";
-      await this.saveTicketsFile();
+        this.emit("ticket:plan-generated", ticket, plan);
 
-      const approved = await this.waitForApproval(ticket, plan, config);
+        // Phase: Awaiting Approval
+        await this.updateState({ currentPhase: "awaiting_approval" });
+        ticket.status = "awaiting_approval";
+        await this.saveTicketsFile();
 
-      // Execute onApproval hooks
-      await this.executeHooks(mergedHooks, "onApproval", {
-        ticketId: ticket.id,
-        ticketTitle: ticket.title,
-        plan,
-      });
+        const result = await this.waitForApproval(ticket, plan, config);
+
+        // Execute onApproval hooks with approval context
+        await this.executeHooks(mergedHooks, "onApproval", {
+          ticketId: ticket.id,
+          ticketTitle: ticket.title,
+          plan,
+          approved: result.approved,
+          rejectionReason: result.rejectionReason,
+        });
+
+        if (result.approved) {
+          approved = true;
+          this.emit("ticket:approved", ticket);
+          this.multiplexer.broadcastStatus({
+            ticketId: ticket.id,
+            ticketTitle: ticket.title,
+            status: "started",
+            message: "Plan approved, execution starting",
+          }).catch(err => logger.warn("Failed to broadcast status", { error: String(err) }));
+
+          // Phase: Executing
+          await this.executeTicket(ticket, plan, config, mergedHooks);
+          break;
+        }
+
+        // Rejected
+        this.emit("ticket:rejected", ticket, result.rejectionReason);
+
+        if (!result.rejectionReason || attempt >= maxRevisions) {
+          // No feedback or max revisions reached — skip
+          break;
+        }
+
+        // Has feedback and revisions remaining — loop with feedback
+        feedback = result.rejectionReason;
+        logger.info("Plan rejected with feedback, revising", {
+          attempt: attempt + 1,
+          maxRevisions,
+          feedback: feedback.slice(0, 100),
+        });
+      }
 
       if (!approved) {
         ticket.status = "skipped";
@@ -545,17 +591,6 @@ class OrchestratorImpl
         logger.clearContext();
         return;
       }
-
-      this.emit("ticket:approved", ticket);
-      this.multiplexer.broadcastStatus({
-        ticketId: ticket.id,
-        ticketTitle: ticket.title,
-        status: "started",
-        message: "Plan approved, execution starting",
-      }).catch(err => logger.warn("Failed to broadcast status", { error: String(err) }));
-
-      // Phase: Executing
-      await this.executeTicket(ticket, plan, config, mergedHooks);
     } else {
       // Direct execution mode — skip planning and approval
       logger.info("Plan mode disabled, executing directly");
@@ -574,10 +609,10 @@ class OrchestratorImpl
     logger.clearContext();
   }
 
-  private async generatePlan(ticket: Ticket, config: Config): Promise<string> {
+  private async generatePlan(ticket: Ticket, config: Config, feedback?: string): Promise<string> {
     logger.info("Generating plan");
 
-    const prompt = this.buildPlanPrompt(ticket);
+    const prompt = this.buildPlanPrompt(ticket, feedback);
 
     if (this.dryRun) {
       logger.info("Dry run: skipping actual plan generation");
@@ -612,17 +647,17 @@ class OrchestratorImpl
     ticket: Ticket,
     plan: string,
     config: Config
-  ): Promise<boolean> {
+  ): Promise<ApprovalResult> {
     if (config.autoApprove) {
       logger.info("Auto-approving plan");
-      return true;
+      return { approved: true };
     }
 
     logger.info("Waiting for approval");
 
     const planId = this.getPlanIdForTicket(ticket.id);
 
-    return new Promise<boolean>((resolve, reject) => {
+    return new Promise<ApprovalResult>((resolve, reject) => {
       this.pendingApprovals.set(planId, { resolve, reject });
 
       this.multiplexer
@@ -635,13 +670,10 @@ class OrchestratorImpl
         .then((response) => {
           if (this.pendingApprovals.has(planId)) {
             this.pendingApprovals.delete(planId);
-
-            if (!response.approved) {
-              const pending = this.pendingApprovals.get(planId);
-              this.emit("ticket:rejected", ticket, pending?.reason ?? response.rejectionReason);
-            }
-
-            resolve(response.approved);
+            resolve({
+              approved: response.approved,
+              rejectionReason: response.rejectionReason,
+            });
           }
         })
         .catch((err) => {
@@ -1004,7 +1036,7 @@ class OrchestratorImpl
     return `plan-${ticketId}-${randomBytes(4).toString("hex")}`;
   }
 
-  private buildPlanPrompt(ticket: Ticket): string {
+  private buildPlanPrompt(ticket: Ticket, feedback?: string): string {
     const parts = [
       `# Task: ${ticket.title}`,
       "",
@@ -1017,6 +1049,14 @@ class OrchestratorImpl
       for (const criterion of ticket.acceptanceCriteria) {
         parts.push(`- ${criterion}`);
       }
+    }
+
+    if (feedback) {
+      parts.push(
+        "",
+        "## Previous Plan Feedback",
+        feedback,
+      );
     }
 
     parts.push(
