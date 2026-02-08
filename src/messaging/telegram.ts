@@ -166,7 +166,15 @@ class TelegramProvider implements MessagingProvider {
 
     // Flush stale updates
     try {
-      await this.api.getUpdates(-1);
+      const stale = await this.api.getUpdates(-1);
+      if (stale.length > 0) {
+        const lastUpdate = stale[stale.length - 1] as { update_id: number };
+        this.updateOffset = lastUpdate.update_id + 1;
+        logger.info("Flushed stale Telegram updates", {
+          count: stale.length,
+          nextOffset: this.updateOffset,
+        });
+      }
     } catch (error) {
       logger.warn("Failed to flush stale updates", {
         error: error instanceof Error ? error.message : String(error),
@@ -329,7 +337,13 @@ class TelegramProvider implements MessagingProvider {
     }
 
     this.pollTimer = setTimeout(() => {
-      this.pollForReplies();
+      this.pollForReplies().catch((error) => {
+        logger.error("Unhandled polling error", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+        // Still try to schedule next poll
+        this.schedulePoll();
+      });
     }, this.currentBackoff);
   }
 
@@ -339,12 +353,24 @@ class TelegramProvider implements MessagingProvider {
       return;
     }
 
+    logger.debug("Polling for replies", {
+      offset: this.updateOffset,
+      trackedCount: this.trackedMessages.size,
+      trackedIds: [...this.trackedMessages.keys()],
+      backoff: this.currentBackoff,
+    });
+
     let hadResponse = false;
 
     try {
       const updates = await this.api.getUpdates(
-        this.updateOffset || undefined
+        this.updateOffset > 0 ? this.updateOffset : undefined
       );
+
+      logger.debug("getUpdates response", {
+        updateCount: updates.length,
+        updateIds: updates.map((u: unknown) => (u as { update_id: number }).update_id),
+      });
 
       for (const raw of updates) {
         const update = raw as {
@@ -356,12 +382,32 @@ class TelegramProvider implements MessagingProvider {
             from?: { id: number; first_name?: string; username?: string };
             reply_to_message?: { message_id: number };
           };
+          channel_post?: {
+            message_id: number;
+            chat: { id: number };
+            text?: string;
+            sender_chat?: { id: number; title?: string };
+            reply_to_message?: { message_id: number };
+          };
         };
 
         // Advance offset past this update
         this.updateOffset = update.update_id + 1;
 
-        const msg = update.message;
+        const msg = update.message ?? update.channel_post;
+
+        logger.debug("Processing update", {
+          updateId: update.update_id,
+          hasMessage: !!update.message,
+          hasChannelPost: !!update.channel_post,
+          chatId: msg?.chat?.id,
+          text: msg?.text?.slice(0, 100),
+          replyToMessageId: msg?.reply_to_message?.message_id,
+          isTracked: msg?.reply_to_message
+            ? this.trackedMessages.has(msg.reply_to_message.message_id)
+            : false,
+        });
+
         if (!msg || !msg.text || !msg.reply_to_message) continue;
 
         // Chat ID validation
@@ -375,10 +421,19 @@ class TelegramProvider implements MessagingProvider {
 
         const replyToId = msg.reply_to_message.message_id;
         const tracked = this.trackedMessages.get(replyToId);
-        if (!tracked) continue;
+        if (!tracked) {
+          logger.debug("Reply to untracked message, skipping", {
+            replyToId,
+            trackedIds: [...this.trackedMessages.keys()],
+          });
+          continue;
+        }
 
         const respondedBy =
-          msg.from?.username || msg.from?.first_name || String(msg.from?.id);
+          (msg as { from?: { username?: string; first_name?: string; id?: number } }).from?.username
+          || (msg as { from?: { username?: string; first_name?: string; id?: number } }).from?.first_name
+          || (msg as { sender_chat?: { title?: string; id?: number } }).sender_chat?.title
+          || String((msg as { from?: { id?: number } }).from?.id ?? "unknown");
 
         if (tracked.type === "plan") {
           const result = parseApprovalReply(msg.text);
@@ -434,6 +489,12 @@ class TelegramProvider implements MessagingProvider {
         MAX_BACKOFF
       );
     }
+
+    logger.debug("Poll cycle complete", {
+      hadResponse,
+      newBackoff: this.currentBackoff,
+      remainingTracked: this.trackedMessages.size,
+    });
 
     // Schedule next poll if there are still tracked messages
     this.schedulePoll();
