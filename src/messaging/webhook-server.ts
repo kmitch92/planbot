@@ -6,6 +6,7 @@
 import type { Server } from "http";
 import * as crypto from "crypto";
 import express from "express";
+import rateLimit from "express-rate-limit";
 import type {
   Application,
   Request,
@@ -217,18 +218,37 @@ export function createWebhookServer(config: WebhookServerConfig): WebhookServer 
     expressApp.use(corsMiddleware);
     expressApp.use(requestLogger);
 
+    // Rate limiter — applied to all routes except health
+    const limiter = rateLimit({
+      windowMs: 60_000,
+      limit: 100,
+      skipFailedRequests: false,
+      handler: (_req, res) => {
+        res.status(429).json({
+          error: {
+            code: "RATE_LIMITED",
+            message: "Too many requests. Try again later.",
+          },
+        });
+      },
+      skip: (req) => req.path === `${basePath}/health`,
+    });
+
     // Handle OPTIONS preflight
     expressApp.options(`${basePath}/*`, (_req, res) => {
       res.sendStatus(204);
     });
 
-    // Health check endpoint (no auth required)
+    // Health check endpoint (no auth required, not rate limited)
     expressApp.get(`${basePath}/health`, (_req, res) => {
       res.json({
         status: "ok",
         uptime: Math.floor((Date.now() - startTime) / 1000),
       });
     });
+
+    // Apply rate limiter to all non-health routes
+    expressApp.use(limiter);
 
     // Status endpoint (auth required if secret configured)
     expressApp.get(`${basePath}/status`, verifySignature, (_req, res) => {
