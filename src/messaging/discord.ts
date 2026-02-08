@@ -389,6 +389,27 @@ class DiscordProvider implements MessagingProvider {
    * Handle all Discord interactions (buttons, select menus, modals).
    */
   private async handleInteraction(interaction: Interaction): Promise<void> {
+    // Channel authorization — only process interactions from the configured channel
+    if (interaction.channelId !== this.channelId) {
+      logger.warn("Rejected interaction from unauthorized channel", {
+        channelId: interaction.channelId,
+        expectedChannelId: this.channelId,
+        interactionId: interaction.id,
+      });
+
+      if ("reply" in interaction && typeof interaction.reply === "function") {
+        try {
+          await (interaction as ButtonInteraction).reply({
+            content: "This interaction is not allowed in this channel.",
+            ephemeral: true,
+          });
+        } catch {
+          // Interaction may have timed out or already been replied to
+        }
+      }
+      return;
+    }
+
     if (interaction.isButton()) {
       await this.handleButtonInteraction(interaction);
     } else if (interaction.isStringSelectMenu()) {
