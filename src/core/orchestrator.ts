@@ -14,6 +14,7 @@ import {
   validateTicketDependencies,
   TicketSchema,
 } from "./schemas.js";
+import { resolveAndValidateImages, buildImagePromptSection } from "./images.js";
 import { stateManager } from "./state.js";
 import { markTicketCompleteInFile } from "./tickets-io.js";
 import { claude } from "./claude.js";
@@ -482,6 +483,11 @@ class OrchestratorImpl
 
     const mergedHooks = hookExecutor.mergeHooks(globalHooks, ticket.hooks);
 
+    // Resolve images once for all prompt builders
+    const { resolved: resolvedImagePaths, warnings: imageWarnings } = ticket.images?.length
+      ? await resolveAndValidateImages(this.projectRoot, ticket.images)
+      : { resolved: [] as string[], warnings: [] as string[] };
+
     this.emit("ticket:start", ticket);
     this.multiplexer.broadcastStatus({
       ticketId: ticket.id,
@@ -511,7 +517,7 @@ class OrchestratorImpl
         ticket.status = "planning";
         await this.saveTicketsFile();
 
-        const plan = await this.generatePlan(ticket, config, feedback);
+        const plan = await this.generatePlan(ticket, config, feedback, resolvedImagePaths, imageWarnings);
 
         // Save plan
         const planPath = await stateManager.savePlan(this.projectRoot, ticket.id, plan);
@@ -553,7 +559,7 @@ class OrchestratorImpl
           }).catch(err => logger.warn("Failed to broadcast status", { error: String(err) }));
 
           // Phase: Executing
-          await this.executeTicket(ticket, plan, config, mergedHooks);
+          await this.executeTicket(ticket, plan, config, mergedHooks, resolvedImagePaths, imageWarnings);
           break;
         }
 
@@ -595,8 +601,8 @@ class OrchestratorImpl
       // Direct execution mode — skip planning and approval
       logger.info("Plan mode disabled, executing directly");
 
-      const directPrompt = this.buildDirectExecutionPrompt(ticket);
-      await this.executeTicket(ticket, directPrompt, config, mergedHooks);
+      const directPrompt = this.buildDirectExecutionPrompt(ticket, resolvedImagePaths, imageWarnings);
+      await this.executeTicket(ticket, directPrompt, config, mergedHooks, resolvedImagePaths, imageWarnings);
     }
 
     // Execute afterEach hooks
@@ -609,10 +615,10 @@ class OrchestratorImpl
     logger.clearContext();
   }
 
-  private async generatePlan(ticket: Ticket, config: Config, feedback?: string): Promise<string> {
+  private async generatePlan(ticket: Ticket, config: Config, feedback?: string, resolvedImagePaths: string[] = [], imageWarnings: string[] = []): Promise<string> {
     logger.info("Generating plan");
 
-    const prompt = this.buildPlanPrompt(ticket, feedback);
+    const prompt = this.buildPlanPrompt(ticket, feedback, resolvedImagePaths, imageWarnings);
 
     if (this.dryRun) {
       logger.info("Dry run: skipping actual plan generation");
@@ -687,7 +693,9 @@ class OrchestratorImpl
     ticket: Ticket,
     plan: string,
     config: Config,
-    hooks?: Hooks
+    hooks?: Hooks,
+    resolvedImagePaths: string[] = [],
+    imageWarnings: string[] = [],
   ): Promise<void> {
     await this.updateState({ currentPhase: "executing" });
     ticket.status = "executing";
@@ -695,7 +703,7 @@ class OrchestratorImpl
 
     this.emit("ticket:executing", ticket);
 
-    const prompt = this.buildExecutionPrompt(ticket, plan);
+    const prompt = this.buildExecutionPrompt(ticket, plan, resolvedImagePaths, imageWarnings);
 
     if (this.dryRun) {
       logger.info("Dry run: skipping actual execution");
@@ -1036,7 +1044,7 @@ class OrchestratorImpl
     return `plan-${ticketId}-${randomBytes(4).toString("hex")}`;
   }
 
-  private buildPlanPrompt(ticket: Ticket, feedback?: string): string {
+  private buildPlanPrompt(ticket: Ticket, feedback?: string, resolvedImagePaths: string[] = [], imageWarnings: string[] = []): string {
     const parts = [
       `# Task: ${ticket.title}`,
       "",
@@ -1049,6 +1057,11 @@ class OrchestratorImpl
       for (const criterion of ticket.acceptanceCriteria) {
         parts.push(`- ${criterion}`);
       }
+    }
+
+    const imageSection = buildImagePromptSection(resolvedImagePaths, imageWarnings);
+    if (imageSection) {
+      parts.push("", imageSection);
     }
 
     if (feedback) {
@@ -1075,7 +1088,7 @@ class OrchestratorImpl
     return parts.join("\n");
   }
 
-  private buildDirectExecutionPrompt(ticket: Ticket): string {
+  private buildDirectExecutionPrompt(ticket: Ticket, resolvedImagePaths: string[] = [], imageWarnings: string[] = []): string {
     const parts = [
       `# Task: ${ticket.title}`,
       "",
@@ -1090,10 +1103,15 @@ class OrchestratorImpl
       }
     }
 
+    const imageSection = buildImagePromptSection(resolvedImagePaths, imageWarnings);
+    if (imageSection) {
+      parts.push("", imageSection);
+    }
+
     return parts.join("\n");
   }
 
-  private buildExecutionPrompt(ticket: Ticket, plan: string): string {
+  private buildExecutionPrompt(ticket: Ticket, plan: string, resolvedImagePaths: string[] = [], imageWarnings: string[] = []): string {
     const parts = [
       `# Execute Task: ${ticket.title}`,
       "",
@@ -1111,6 +1129,11 @@ class OrchestratorImpl
       for (const criterion of ticket.acceptanceCriteria) {
         parts.push(`- [ ] ${criterion}`);
       }
+    }
+
+    const imageSection = buildImagePromptSection(resolvedImagePaths, imageWarnings);
+    if (imageSection) {
+      parts.push("", imageSection);
     }
 
     return parts.join("\n");
