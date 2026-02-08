@@ -735,3 +735,200 @@ describe("Claude Wrapper - Question Option Parsing", () => {
     expect(capturedQuestion!.options).toBeUndefined();
   });
 });
+
+// =============================================================================
+// Standalone Prompt Execution Tests (runPrompt)
+// =============================================================================
+
+describe("Claude Wrapper - runPrompt", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("spawns claude with -p flag and correct args", async () => {
+    const mockProc = createMockProcess({
+      stdout: [
+        JSON.stringify({ type: "assistant", message: "Response text" }) + "\n",
+        JSON.stringify({ type: "result", result: "", cost_usd: 0.01 }) + "\n",
+      ],
+      exitCode: 0,
+    });
+    mockSpawn.mockReturnValue(mockProc);
+
+    await claude.runPrompt("Summarize this code");
+
+    expect(mockSpawn).toHaveBeenCalledWith(
+      "claude",
+      expect.arrayContaining([
+        "--print",
+        "--verbose",
+        "--output-format",
+        "stream-json",
+        "-p",
+        "Summarize this code",
+      ]),
+      expect.any(Object)
+    );
+
+    const calledArgs = mockSpawn.mock.calls[0]?.[1] as string[];
+    expect(calledArgs).not.toContain("--input-format");
+  });
+
+  it("includes --model flag when model provided", async () => {
+    const mockProc = createMockProcess({
+      stdout: [
+        JSON.stringify({ type: "assistant", message: "Done" }) + "\n",
+        JSON.stringify({ type: "result", result: "", cost_usd: 0.01 }) + "\n",
+      ],
+      exitCode: 0,
+    });
+    mockSpawn.mockReturnValue(mockProc);
+
+    await claude.runPrompt("Test prompt", { model: "opus" });
+
+    expect(mockSpawn).toHaveBeenCalledWith(
+      "claude",
+      expect.arrayContaining(["--model", "opus"]),
+      expect.any(Object)
+    );
+  });
+
+  it("includes --dangerously-skip-permissions when skipPermissions true", async () => {
+    const mockProc = createMockProcess({
+      stdout: [
+        JSON.stringify({ type: "assistant", message: "Done" }) + "\n",
+        JSON.stringify({ type: "result", result: "", cost_usd: 0.01 }) + "\n",
+      ],
+      exitCode: 0,
+    });
+    mockSpawn.mockReturnValue(mockProc);
+
+    await claude.runPrompt("Test prompt", { skipPermissions: true });
+
+    expect(mockSpawn).toHaveBeenCalledWith(
+      "claude",
+      expect.arrayContaining(["--dangerously-skip-permissions"]),
+      expect.any(Object)
+    );
+  });
+
+  it("returns success with output on successful exit", async () => {
+    const mockProc = createMockProcess({
+      stdout: [
+        JSON.stringify({ type: "assistant", message: "The answer is 42" }) + "\n",
+        JSON.stringify({ type: "result", result: "", cost_usd: 0.01 }) + "\n",
+      ],
+      exitCode: 0,
+    });
+    mockSpawn.mockReturnValue(mockProc);
+
+    const result = await claude.runPrompt("What is the answer?");
+
+    expect(result.success).toBe(true);
+    expect(result.output).toBe("The answer is 42");
+  });
+
+  it("returns costUsd from result event", async () => {
+    const mockProc = createMockProcess({
+      stdout: [
+        JSON.stringify({ type: "assistant", message: "Response" }) + "\n",
+        JSON.stringify({ type: "result", result: "", cost_usd: 0.0567 }) + "\n",
+      ],
+      exitCode: 0,
+    });
+    mockSpawn.mockReturnValue(mockProc);
+
+    const result = await claude.runPrompt("Calculate cost");
+
+    expect(result.costUsd).toBe(0.0567);
+  });
+
+  it("returns success false on non-zero exit", async () => {
+    const mockProc = createMockProcess({
+      stdout: [
+        JSON.stringify({ type: "error", error: "API error" }) + "\n",
+      ],
+      exitCode: 1,
+    });
+    mockSpawn.mockReturnValue(mockProc);
+
+    const result = await claude.runPrompt("Failing prompt");
+
+    expect(result.success).toBe(false);
+  });
+
+  it("returns success false on timeout", async () => {
+    const proc = new EventEmitter() as ChildProcess;
+
+    proc.stdin = new Writable({
+      write(_chunk, _encoding, callback) {
+        callback();
+      },
+    }) as ChildProcess["stdin"];
+
+    proc.stdout = new Readable({ read() {} }) as ChildProcess["stdout"];
+    proc.stderr = new Readable({ read() {} }) as ChildProcess["stderr"];
+    proc.kill = vi.fn().mockImplementation(() => {
+      proc.emit("close", 0);
+      return true;
+    });
+    proc.pid = 99999;
+
+    mockSpawn.mockReturnValue(proc);
+
+    const result = await claude.runPrompt("Slow prompt", { timeout: 50 });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("timed out");
+    expect(proc.kill).toHaveBeenCalled();
+  });
+
+  it("does not affect currentProcess", async () => {
+    const executeProc = createMockProcess({
+      closeDelay: 500,
+    });
+    const runPromptProc = createMockProcess({
+      stdout: [
+        JSON.stringify({ type: "assistant", message: "Quick response" }) + "\n",
+        JSON.stringify({ type: "result", result: "", cost_usd: 0.01 }) + "\n",
+      ],
+      exitCode: 0,
+    });
+
+    let callCount = 0;
+    mockSpawn.mockImplementation(() => {
+      callCount++;
+      return callCount === 1 ? executeProc : runPromptProc;
+    });
+
+    const execPromise = claude.execute("Long running task", {}, {});
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    await claude.runPrompt("Quick standalone prompt");
+
+    claude.abort();
+    expect(executeProc.kill).toHaveBeenCalledWith("SIGTERM");
+    expect(runPromptProc.kill).not.toHaveBeenCalledWith("SIGTERM");
+
+    executeProc.emit("close", 0);
+    await execPromise;
+  });
+
+  it("returns error string on spawn error", async () => {
+    const mockProc = createMockProcess({
+      emitError: new Error("ENOENT: claude not found"),
+    });
+    mockSpawn.mockReturnValue(mockProc);
+
+    const result = await claude.runPrompt("Any prompt");
+
+    expect(result.success).toBe(false);
+    expect(result.error).toBeDefined();
+    expect(result.error).toContain("claude");
+  });
+});
