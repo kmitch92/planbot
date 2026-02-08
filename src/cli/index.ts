@@ -27,6 +27,7 @@ import {
   createResetCommand,
   createClearCommand,
 } from './commands/utility.js';
+import { createAttachCommand } from './commands/attach.js';
 
 // =============================================================================
 // Program Setup
@@ -74,6 +75,7 @@ program.addCommand(createStopCommand());
 
 // Utility commands
 program.addCommand(createValidateCommand());
+program.addCommand(createAttachCommand());
 program.addCommand(createPlanCommand());
 program.addCommand(createServeCommand());
 program.addCommand(createResetCommand());
