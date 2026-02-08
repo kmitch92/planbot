@@ -144,6 +144,8 @@ export const ConfigSchema = z.object({
   maxBudgetPerTicket: z.number().positive().default(10),
   /** Maximum retry attempts for failed operations */
   maxRetries: z.number().int().nonnegative().default(3),
+  /** Maximum number of plan revision attempts after rejection with feedback (0 = no revisions) */
+  maxPlanRevisions: z.number().int().nonnegative().default(3),
   /** Continue processing queue if a ticket fails */
   continueOnError: z.boolean().default(false),
   /** Automatically approve plans without human review */
