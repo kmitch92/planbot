@@ -58,6 +58,8 @@ export interface HookResult {
 export interface HookExecuteOptions {
   /** Enable shell hook execution. Shell hooks are DISABLED by default. */
   allowShellHooks?: boolean;
+  /** Runner for prompt hooks. When provided, prompt hooks invoke Claude Code instead of returning text passively. */
+  claudeRunner?: (prompt: string) => Promise<HookResult>;
 }
 
 // =============================================================================
@@ -346,9 +348,15 @@ function createHookExecutor(): HookExecutor {
       }
 
       // action.type === "prompt"
-      // Prompt hooks are not executable - they are hints for the AI
-      // Return success with the prompt as output for the orchestrator
-      logger.debug("Returning prompt hook for AI injection", {
+      if (options?.claudeRunner) {
+        logger.info("Executing prompt hook via Claude", {
+          promptLength: action.command.length,
+        });
+        return options.claudeRunner(action.command);
+      }
+
+      // Fallback: passive hint mode (used when no runner provided, e.g., onQuestion)
+      logger.debug("Returning prompt hook as hint (no runner)", {
         promptLength: action.command.length,
       });
 

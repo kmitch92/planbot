@@ -79,6 +79,15 @@ export interface ClaudeWrapper {
 
   /** Abort current execution */
   abort(): void;
+
+  /** Run a standalone prompt (e.g., for hook execution). Independent process, does not affect currentProcess. */
+  runPrompt(prompt: string, options?: {
+    model?: Model;
+    cwd?: string;
+    timeout?: number;
+    skipPermissions?: boolean;
+    verbose?: boolean;
+  }): Promise<{ success: boolean; output?: string; error?: string; costUsd?: number }>;
 }
 
 // =============================================================================
@@ -402,6 +411,187 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
     logger.info('Aborting Claude execution');
     this.currentProcess.kill('SIGTERM');
     this.currentProcess = null;
+  }
+
+  /**
+   * Run a standalone prompt — independent process, does not affect currentProcess.
+   */
+  async runPrompt(
+    prompt: string,
+    options: {
+      model?: Model;
+      cwd?: string;
+      timeout?: number;
+      skipPermissions?: boolean;
+      verbose?: boolean;
+    } = {}
+  ): Promise<{ success: boolean; output?: string; error?: string; costUsd?: number }> {
+    const { model, cwd, timeout = 300000, skipPermissions, verbose } = options;
+    const startTime = Date.now();
+
+    logger.info('Running standalone prompt', {
+      promptPreview: prompt.slice(0, 200),
+      model,
+      timeout,
+    });
+
+    return new Promise((resolve) => {
+      const args = [
+        '--print',
+        '--verbose',
+        '--output-format', 'stream-json',
+        '-p', prompt,
+      ];
+      if (model) {
+        args.push('--model', model);
+      }
+      if (skipPermissions) {
+        args.push('--dangerously-skip-permissions');
+      }
+
+      const proc = spawn('claude', args, {
+        cwd,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+
+      // Write raw output to log file for debugging
+      let logStream: ReturnType<typeof createWriteStream> | null = null;
+      if (verbose && cwd) {
+        const logDir = join(cwd, '.planbot', 'logs');
+        mkdirSync(logDir, { recursive: true });
+        const logPath = join(logDir, `prompt-${Date.now()}.log`);
+        logStream = createWriteStream(logPath, { flags: 'w' });
+        logStream.write(`=== Prompt execution started at ${new Date().toISOString()} ===\n`);
+        logStream.write(`=== Args: ${args.join(' ')} ===\n\n`);
+        logger.info('Raw output log', { path: logPath });
+      }
+
+      const assistantMessages: string[] = [];
+      let costUsd: number | undefined;
+      let errorMessage: string | undefined;
+      let timedOut = false;
+      let lineBuffer = '';
+      let stderrOutput = '';
+
+      const timer = setTimeout(() => {
+        timedOut = true;
+        proc.kill('SIGTERM');
+        logger.warn('Prompt execution timed out', { timeout });
+      }, timeout);
+
+      proc.stdout?.on('data', (chunk: Buffer) => {
+        const data = chunk.toString();
+        logStream?.write(data);
+
+        lineBuffer += data;
+        const lines = lineBuffer.split('\n');
+        lineBuffer = lines.pop() ?? '';
+
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          try {
+            const parsed = JSON.parse(line) as Record<string, unknown>;
+            const type = parsed.type as string | undefined;
+
+            if (type === 'assistant') {
+              const text = this.extractTextContent(parsed as any);
+              if (text) {
+                assistantMessages.push(text);
+              }
+            } else if (type === 'result') {
+              costUsd = parsed.total_cost_usd as number | undefined
+                ?? parsed.cost_usd as number | undefined;
+            } else if (type === 'error') {
+              errorMessage = (parsed.error ?? parsed.message) as string | undefined;
+            }
+          } catch {
+            // Not valid JSON, skip
+          }
+        }
+      });
+
+      proc.stderr?.on('data', (chunk: Buffer) => {
+        const text = chunk.toString();
+        logStream?.write(`[STDERR] ${text}`);
+        stderrOutput += text;
+        logger.warn('Claude stderr (runPrompt)', { text: text.trim().slice(0, 500) });
+      });
+
+      proc.on('error', (err) => {
+        clearTimeout(timer);
+        logger.error('Failed to spawn claude process (runPrompt)', { error: err.message });
+        resolve({
+          success: false,
+          error: `Failed to spawn claude: ${err.message}`,
+        });
+      });
+
+      proc.on('close', (code) => {
+        clearTimeout(timer);
+        logStream?.end();
+
+        // Process remaining buffer
+        if (lineBuffer.trim()) {
+          try {
+            const parsed = JSON.parse(lineBuffer) as Record<string, unknown>;
+            const type = parsed.type as string | undefined;
+            if (type === 'assistant') {
+              const text = this.extractTextContent(parsed as any);
+              if (text) assistantMessages.push(text);
+            } else if (type === 'result') {
+              costUsd = parsed.total_cost_usd as number | undefined
+                ?? parsed.cost_usd as number | undefined;
+            } else if (type === 'error') {
+              errorMessage = (parsed.error ?? parsed.message) as string | undefined;
+            }
+          } catch {
+            // Not valid JSON
+          }
+        }
+
+        const durationMs = Date.now() - startTime;
+        logger.info('Prompt execution completed', {
+          durationMs,
+          exitCode: code,
+          costUsd,
+          assistantMessages: assistantMessages.length,
+        });
+
+        if (timedOut) {
+          resolve({
+            success: false,
+            error: 'Prompt execution timed out',
+            costUsd,
+          });
+          return;
+        }
+
+        if (errorMessage) {
+          resolve({
+            success: false,
+            error: errorMessage,
+            costUsd,
+          });
+          return;
+        }
+
+        if (code !== 0) {
+          resolve({
+            success: false,
+            error: stderrOutput.trim() || `Claude exited with code ${code}`,
+            costUsd,
+          });
+          return;
+        }
+
+        const output = assistantMessages.join('\n\n');
+        resolve({
+          success: true,
+          output,
+          costUsd,
+        });
+      });
+    });
   }
 
   // =============================================================================

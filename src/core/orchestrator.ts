@@ -861,7 +861,7 @@ class OrchestratorImpl
       ticketTitle: ticket.title,
       question: question.text,
       questionId: question.id,
-    });
+    }, { passivePrompts: true });
 
     // Check if any prompt hooks provide guidance
     const promptHints = hookResults
@@ -991,10 +991,29 @@ class OrchestratorImpl
   private async executeHooks(
     hooks: Hooks | undefined,
     name: keyof Hooks,
-    context: HookContext
+    context: HookContext,
+    options?: { passivePrompts?: boolean }
   ) {
     const allowShellHooks = this.ticketsFile?.config?.allowShellHooks ?? false;
-    return hookExecutor.executeNamed(hooks, name, context, { allowShellHooks });
+    const config = this.ticketsFile?.config;
+
+    // Build Claude runner for prompt hooks (unless passive mode for onQuestion)
+    const claudeRunner = options?.passivePrompts ? undefined : async (prompt: string) => {
+      const result = await claude.runPrompt(prompt, {
+        model: config?.model,
+        cwd: this.projectRoot,
+        timeout: 300000,
+        skipPermissions: config?.skipPermissions,
+        verbose: this.verbose,
+      });
+      return {
+        success: result.success,
+        output: result.output,
+        error: result.error,
+      };
+    };
+
+    return hookExecutor.executeNamed(hooks, name, context, { allowShellHooks, claudeRunner });
   }
 
   private findTicket(ticketId: string): Ticket | undefined {
