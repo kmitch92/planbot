@@ -112,6 +112,9 @@ config:
   # Skip permission prompts (dangerous mode)
   skipPermissions: false
 
+  # Allow shell hook execution from tickets.yaml (default: false)
+  allowShellHooks: false
+
   # Messaging provider configuration (optional)
   messaging:
     provider: slack  # Options: "slack" | "discord" | "telegram"
@@ -122,6 +125,10 @@ config:
     enabled: false
     port: 3847
     path: "/planbot/webhook"
+    secret: ${PLANBOT_WEBHOOK_SECRET}  # HMAC secret (required unless insecure: true)
+    cors: false                        # Enable CORS headers
+    corsOrigins: []                    # Allowed origins (whitelist mode)
+    insecure: false                    # Allow starting without secret (not recommended)
 
   # Timeout configurations (milliseconds)
   timeouts:
@@ -485,6 +492,10 @@ hooks:
       command: "Review this plan for security issues"
 ```
 
+### Security Note
+
+Shell hooks are **disabled by default**. Pass `--allow-shell-hooks` when starting planbot, or set `allowShellHooks: true` in config, to enable them. Without this flag, shell-type hooks log a warning and return failure. Prompt-type hooks are unaffected.
+
 ### Environment Variables in Hooks
 
 Hook shell commands have access to these environment variables:
@@ -617,6 +628,43 @@ curl -X POST http://localhost:3847/planbot/webhook/approve \
   -H "X-Planbot-Signature: $SIGNATURE" \
   -d "$BODY"
 ```
+
+## Security
+
+Planbot ships with several hardening measures enabled by default.
+
+### Webhook Authentication
+
+The webhook server **requires HMAC-SHA256 authentication by default**. Set the `PLANBOT_WEBHOOK_SECRET` environment variable or `webhook.secret` in config. Requests must include an `X-Planbot-Signature` header containing the hex-encoded HMAC-SHA256 digest of the raw request body.
+
+To start the webhook server without a secret (not recommended), set `webhook.insecure: true` in config or pass `--insecure` on the CLI.
+
+### CORS
+
+CORS is disabled by default. Enable it with `webhook.cors: true`. When `corsOrigins` is provided, only those origins are allowed (whitelist mode). Without `corsOrigins`, no `Access-Control-Allow-Origin` header is sent even when CORS is enabled.
+
+```yaml
+webhook:
+  cors: true
+  corsOrigins:
+    - "https://dashboard.example.com"
+```
+
+### Autonomous Mode Safety Interlock
+
+Using `--skip-permissions` and `--auto-approve` together creates fully autonomous execution with no human oversight. Planbot rejects this combination unless you also pass `--i-accept-autonomous-risk`.
+
+### Shell Hook Restrictions
+
+Shell hooks are **disabled by default**. Ticket YAML files can define shell hooks, but they will not execute unless you pass `--allow-shell-hooks` on the CLI or set `config.allowShellHooks: true`. Prompt-type hooks (hints for the AI) are always allowed.
+
+### Log Sanitization
+
+Log output automatically masks sensitive values. Keys containing `token`, `secret`, `password`, `apikey`, `api_key`, `bottoken`, or `apptoken` are redacted before writing to log files. Environment variables passed to shell hooks are sanitized to remove null bytes and control characters.
+
+### Telegram Callback Validation
+
+Incoming Telegram callback data is validated against expected formats before processing, preventing injection of malformed data through the Telegram API.
 
 ## Development
 
