@@ -76,7 +76,7 @@ Planbot follows a structured lifecycle for each ticket in the queue:
 2. **Plan** — Sends ticket description to Claude CLI, which generates an implementation plan
 3. **Approve** — Presents the plan for human review via terminal (and optionally Telegram/Slack/Discord)
 4. **Execute** — Feeds the approved plan back to Claude CLI for autonomous implementation
-5. **Track** — Persists state to `.planbot/` so you can pause, resume, or inspect progress
+5. **Track** — Persists state to `.planbot/` so you can pause, resume, or inspect progress. Completed tickets are marked with `complete: true` directly in your tickets file, ensuring they are never re-executed — even across restarts.
 
 Tickets with `planMode: false` skip steps 2-3 and execute directly from their description.
 
@@ -178,6 +178,7 @@ Each ticket supports:
 | `hooks` | object | - | Ticket-specific hooks |
 | `metadata` | object | - | Arbitrary metadata for extensibility |
 | `planMode` | boolean | - | Override global planMode for this ticket |
+| `complete` | boolean | - | Set to `true` automatically when ticket finishes; persisted to YAML |
 
 **Status values**: `pending`, `planning`, `awaiting_approval`, `approved`, `executing`, `completed`, `failed`, `skipped`
 
@@ -208,6 +209,7 @@ planbot start
 planbot start --auto-approve
 planbot start --dry-run
 planbot start custom-tickets.yaml --verbose
+planbot start --allow-shell-hooks --verbose
 ```
 
 **Options:**
@@ -218,6 +220,9 @@ planbot start custom-tickets.yaml --verbose
 - `-v, --verbose`: Enable verbose Claude output logging to `.planbot/logs/`
 - `-C, --continuous`: Keep running and prompt for new plans after completion
 - `--continuous-timeout <ms>`: Timeout for next plan prompt (default: 1 hour)
+- `--allow-shell-hooks`: Allow shell hook execution from tickets.yaml (disabled by default)
+- `--insecure`: Allow webhook server to start without HMAC secret
+- `--i-accept-autonomous-risk`: Required when combining `--skip-permissions` and `--auto-approve`
 
 ### Continuous Mode
 
@@ -434,6 +439,8 @@ export DISCORD_BOT_TOKEN="..."
 
 ### Telegram
 
+Planbot uses **reply-based polling** for Telegram interactions. Instead of inline keyboard buttons, the bot sends a prompt message and listens for reply messages.
+
 ```yaml
 messaging:
   provider: telegram
@@ -453,6 +460,12 @@ export TELEGRAM_BOT_TOKEN="..."
 ```
 
 **Auto-detection:** If `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` are set in your environment (or `.env` file), Telegram notifications are enabled automatically — no `messaging` config block needed.
+
+**How approvals work:** The bot sends a prompt message such as "Reply to this message to approve or reject." Reply with "yes", "approve", "lgtm", or "👍" to approve. Any other reply text is treated as a rejection with that text as the reason.
+
+**How questions work:** When Claude asks a question with options, the bot sends numbered options. Reply with the option number (e.g., "1") or the option label. Free-form text replies are also accepted.
+
+**Polling behavior:** The bot uses adaptive backoff — polling every 3 seconds after a response, increasing up to 60 seconds when idle. Polling starts automatically when a tracked message is sent and stops when all pending messages are resolved.
 
 ## Hooks
 
