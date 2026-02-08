@@ -24,6 +24,8 @@ tickets:
     acceptanceCriteria:            # Completion criteria (optional)
       - Criterion 1
       - Criterion 2
+    # images:                      # Attached screenshots (optional)
+    #   - .planbot/assets/example-001/screenshot.png
     # dependencies: [other-id]    # IDs of tickets that must complete first
     # metadata:                    # Arbitrary key-value data
     #   estimate: 2h
@@ -98,7 +100,7 @@ hooks:
 # =============================================================================
 #
 # Required fields: id, title, description
-# Optional fields: priority, planMode, acceptanceCriteria, dependencies, hooks, metadata
+# Optional fields: priority, planMode, acceptanceCriteria, dependencies, hooks, metadata, images
 #
 # planMode (default: true):
 #   true  — generate a plan, wait for approval, then execute
@@ -121,6 +123,8 @@ tickets:
       - Users can login and receive tokens
       - Protected routes reject invalid tokens
       - Refresh tokens work correctly
+    # images:
+    #   - .planbot/assets/auth-001/design-mockup.png
 
   - id: auth-002
     title: Add Password Reset Flow
@@ -146,6 +150,8 @@ tickets:
       Replace this with your actual feature description.
     priority: 1
     planMode: false                # Executes directly without plan generation
+    # images:                      # Attach with: planbot attach feature-001 screenshot.png
+    #   - .planbot/assets/feature-001/screenshot.png
     metadata:
       estimate: 4h
       assignee: claude
