@@ -325,16 +325,30 @@ class TelegramProvider implements MessagingProvider {
   // ─── Polling ──────────────────────────────────────────────────────────────
 
   private ensurePolling(): void {
-    if (this.pollTimer !== null) return;
+    if (this.pollTimer !== null) {
+      logger.info("Polling already active, skipping ensurePolling");
+      return;
+    }
+    logger.info("Starting reply polling", {
+      trackedCount: this.trackedMessages.size,
+      trackedIds: [...this.trackedMessages.keys()],
+      backoff: BASE_BACKOFF,
+    });
     this.currentBackoff = BASE_BACKOFF;
     this.schedulePoll();
   }
 
   private schedulePoll(): void {
     if (this.trackedMessages.size === 0) {
+      logger.info("No tracked messages, stopping polling");
       this.pollTimer = null;
       return;
     }
+
+    logger.info("Scheduling next poll", {
+      backoffMs: this.currentBackoff,
+      trackedCount: this.trackedMessages.size,
+    });
 
     this.pollTimer = setTimeout(() => {
       this.pollForReplies().catch((error) => {
@@ -353,7 +367,7 @@ class TelegramProvider implements MessagingProvider {
       return;
     }
 
-    logger.debug("Polling for replies", {
+    logger.info("Polling for replies", {
       offset: this.updateOffset,
       trackedCount: this.trackedMessages.size,
       trackedIds: [...this.trackedMessages.keys()],
@@ -367,7 +381,7 @@ class TelegramProvider implements MessagingProvider {
         this.updateOffset > 0 ? this.updateOffset : undefined
       );
 
-      logger.debug("getUpdates response", {
+      logger.info("getUpdates response", {
         updateCount: updates.length,
         updateIds: updates.map((u: unknown) => (u as { update_id: number }).update_id),
       });
