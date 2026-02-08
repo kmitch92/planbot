@@ -110,3 +110,53 @@ describe('Token Masking', () => {
     });
   });
 });
+
+describe('Logger.audit', () => {
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+  const originalLogLevel = process.env.PLANBOT_LOG_LEVEL;
+
+  beforeEach(() => {
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    warnSpy.mockRestore();
+    if (originalLogLevel === undefined) {
+      delete process.env.PLANBOT_LOG_LEVEL;
+    } else {
+      process.env.PLANBOT_LOG_LEVEL = originalLogLevel;
+    }
+  });
+
+  it('outputs message with SECURITY prefix', () => {
+    const logger = new Logger();
+    logger.audit('Failed auth attempt', { ip: '1.2.3.4' });
+
+    expect(warnSpy).toHaveBeenCalledOnce();
+    const output = warnSpy.mock.calls[0][0] as string;
+    expect(output).toContain('[SECURITY]');
+    expect(output).toContain('Failed auth attempt');
+  });
+
+  it('logs even when log level is error', () => {
+    process.env.PLANBOT_LOG_LEVEL = 'error';
+    const logger = new Logger();
+
+    logger.audit('Unauthorized access');
+
+    expect(warnSpy).toHaveBeenCalledOnce();
+    const output = warnSpy.mock.calls[0][0] as string;
+    expect(output).toContain('[SECURITY]');
+    expect(output).toContain('Unauthorized access');
+  });
+
+  it('includes metadata in output', () => {
+    const logger = new Logger();
+    logger.audit('Rate limited', { ip: '1.2.3.4', endpoint: '/approve' });
+
+    expect(warnSpy).toHaveBeenCalledOnce();
+    const output = warnSpy.mock.calls[0][0] as string;
+    expect(output).toContain('ip=1.2.3.4');
+    expect(output).toContain('endpoint=/approve');
+  });
+});

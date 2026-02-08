@@ -205,6 +205,18 @@ class Logger {
   error(message: string, meta?: LogMeta): void {
     this.log('error', message, meta);
   }
+
+  /**
+   * Security audit log — always emitted regardless of log level.
+   * Used for authentication failures, authorization rejections, rate limiting, etc.
+   */
+  audit(message: string, meta?: LogMeta): void {
+    const timestamp = chalk.dim(formatTimestamp());
+    const securityLabel = chalk.red.bold('[SECURITY]');
+    const contextStr = formatContext(this.context, meta);
+    const output = `${timestamp} ${securityLabel} ${message}${contextStr}`;
+    console.warn(output);
+  }
 }
 
 /**
