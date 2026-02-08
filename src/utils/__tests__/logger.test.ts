@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { maskToken, sanitizeForLogging } from '../logger.js';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { maskToken, sanitizeForLogging, Logger } from '../logger.js';
 
 describe('Token Masking', () => {
   describe('maskToken', () => {
