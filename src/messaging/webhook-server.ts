@@ -210,6 +210,17 @@ export function createWebhookServer(config: WebhookServerConfig): WebhookServer 
   function setupApp(): Application {
     const expressApp = express();
 
+    // Remove X-Powered-By header (Express default)
+    expressApp.disable('x-powered-by');
+
+    // Security headers
+    expressApp.use((_req: Request, res: Response, next: NextFunction) => {
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.setHeader('X-Frame-Options', 'DENY');
+      res.setHeader('Content-Security-Policy', "default-src 'none'");
+      next();
+    });
+
     // Middleware
     // Capture raw body for HMAC verification before JSON parsing
     expressApp.use(express.json({
