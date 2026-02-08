@@ -95,7 +95,7 @@ describe("Server Lifecycle", () => {
   it("getUrl() returns correct URL with normalized path", () => {
     const url = server.getUrl();
 
-    expect(url).toBe(`http://localhost:${port}/webhook`);
+    expect(url).toBe(`http://127.0.0.1:${port}/webhook`);
   });
 });
 
