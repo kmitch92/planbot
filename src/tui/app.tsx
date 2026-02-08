@@ -9,6 +9,7 @@ import { ConfigEditor } from './screens/config-editor.js';
 import { EnvManager } from './screens/env-manager.js';
 import { QueueControl } from './screens/queue-control.js';
 import { LogsViewer } from './screens/logs-viewer.js';
+import { Guides } from './screens/guides.js';
 
 type Screen =
   | 'main-menu'
@@ -70,14 +71,7 @@ const App: React.FC = () => {
       case 'env-manager':
         return <EnvManager onNavigate={handleNavigate} />;
       case 'guides':
-        return (
-          <Box flexDirection="column" padding={1}>
-            <Text bold color="cyan">
-              Guides
-            </Text>
-            <Text dimColor>Coming soon — Press Esc to return</Text>
-          </Box>
-        );
+        return <Guides onNavigate={handleNavigate} />;
       case 'queue-control':
         return <QueueControl onNavigate={handleNavigate} />;
       case 'logs-viewer':
