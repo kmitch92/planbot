@@ -112,7 +112,7 @@ describe("Claude Wrapper - Plan Generation", () => {
 
     expect(mockSpawn).toHaveBeenCalledWith(
       "claude",
-      ["--print", "--output-format", "stream-json", "--permission-mode", "plan", "--model", "opus"],
+      ["--print", "--verbose", "--input-format", "stream-json", "--output-format", "stream-json", "--permission-mode", "plan", "--model", "opus"],
       expect.objectContaining({ stdio: ["pipe", "pipe", "pipe"] })
     );
   });

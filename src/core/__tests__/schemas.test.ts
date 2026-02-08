@@ -232,7 +232,7 @@ describe("TimeoutsSchema", () => {
   it("applies default values correctly", () => {
     const result = TimeoutsSchema.parse({});
 
-    expect(result.planGeneration).toBe(300000);
+    expect(result.planGeneration).toBe(900000);
     expect(result.execution).toBe(1800000);
     expect(result.approval).toBe(86400000);
     expect(result.question).toBe(3600000);
@@ -252,7 +252,7 @@ describe("ConfigSchema", () => {
   it("applies all default values correctly", () => {
     const result = ConfigSchema.parse({});
 
-    expect(result.model).toBe("sonnet");
+    expect(result.model).toBeUndefined();
     expect(result.maxBudgetPerTicket).toBe(10);
     expect(result.maxRetries).toBe(3);
     expect(result.continueOnError).toBe(false);
@@ -260,7 +260,7 @@ describe("ConfigSchema", () => {
     expect(result.skipPermissions).toBe(false);
     expect(result.allowShellHooks).toBe(false);
     expect(result.webhook.enabled).toBe(false);
-    expect(result.timeouts.planGeneration).toBe(300000);
+    expect(result.timeouts.planGeneration).toBe(900000);
   });
 
   it("rejects negative budget values", () => {
@@ -438,7 +438,7 @@ describe("parseTicketsFile", () => {
 
     const result = parseTicketsFile(input);
 
-    expect(result.config.model).toBe("sonnet");
+    expect(result.config.model).toBeUndefined();
     expect(result.config.maxBudgetPerTicket).toBe(10);
     expect(result.tickets[0]?.status).toBe("pending");
     expect(result.tickets[0]?.priority).toBe(0);
