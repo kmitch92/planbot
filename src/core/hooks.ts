@@ -27,6 +27,11 @@ export interface HookContext {
   /** Question ID (for onQuestion hook) */
   questionId?: string;
 
+  /** Whether the plan was approved (for onApproval hook) */
+  approved?: boolean;
+  /** Rejection reason (for onApproval hook) */
+  rejectionReason?: string;
+
   /** Custom metadata - extensible */
   [key: string]: unknown;
 }
@@ -200,6 +205,12 @@ function buildEnvVars(
   }
   if (context.questionId !== undefined) {
     env.PLANBOT_QUESTION_ID = sanitizeEnvValue(String(context.questionId));
+  }
+  if (context.approved !== undefined) {
+    env.PLANBOT_APPROVED = context.approved ? 'true' : 'false';
+  }
+  if (context.rejectionReason !== undefined) {
+    env.PLANBOT_REJECTION_REASON = sanitizeEnvValue(String(context.rejectionReason));
   }
 
   return env;
