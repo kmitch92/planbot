@@ -113,6 +113,12 @@ export interface HookExecutor {
 /** Default timeout for shell hooks in milliseconds */
 const DEFAULT_TIMEOUT_MS = 30000;
 
+/**
+ * Allowlist of system environment variables passed to shell hook subprocesses.
+ * Do NOT spread process.env — that leaks tokens, secrets, etc.
+ */
+const ALLOWED_SYSTEM_VARS = ['PATH', 'HOME', 'SHELL', 'TERM', 'USER', 'LANG', 'LC_ALL', 'TZ', 'TMPDIR'] as const;
+
 // =============================================================================
 // Environment Variable Building
 // =============================================================================
@@ -155,10 +161,19 @@ function buildEnvVars(
   eventName: string,
   context: HookContext
 ): Record<string, string> {
+  // Only pass essential system vars + PLANBOT_* scope
+  // Do NOT spread process.env — that leaks tokens, secrets, etc.
   const env: Record<string, string> = {
-    ...process.env,
     PLANBOT_EVENT: eventName,
   };
+
+  // Copy only allowed system variables from process.env
+  for (const key of ALLOWED_SYSTEM_VARS) {
+    const value = process.env[key];
+    if (value !== undefined) {
+      env[key] = value;
+    }
+  }
 
   if (context.ticketId !== undefined) {
     // Validate ticketId before using in env vars

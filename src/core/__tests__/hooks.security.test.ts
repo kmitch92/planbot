@@ -90,3 +90,72 @@ describe("Hook Executor Security - Environment Variable Sanitization", () => {
     expect(result.output).toContain("TICKET-123_valid");
   });
 });
+
+describe("Shell hook environment variable scoping", () => {
+  const savedEnv: Record<string, string | undefined> = {};
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    for (const key of Object.keys(savedEnv)) {
+      if (savedEnv[key] === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = savedEnv[key];
+      }
+    }
+  });
+
+  it("shell hooks receive PLANBOT_* variables from context", async () => {
+    const action = { type: "shell" as const, command: "env | grep PLANBOT" };
+    const context: HookContext = {
+      ticketId: "test-1",
+      ticketTitle: "Test ticket",
+    };
+
+    const result = await hookExecutor.executeAction(action, context, {
+      allowShellHooks: true,
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.output).toContain("PLANBOT_EVENT=");
+    expect(result.output).toContain("PLANBOT_TICKET_ID=test-1");
+    expect(result.output).toContain("PLANBOT_TICKET_TITLE=Test ticket");
+  });
+
+  it("shell hooks do NOT receive arbitrary process env vars", async () => {
+    savedEnv["SECRET_API_KEY"] = process.env["SECRET_API_KEY"];
+    process.env["SECRET_API_KEY"] = "leaked";
+
+    const action = { type: "shell" as const, command: 'echo "$SECRET_API_KEY"' };
+    const context: HookContext = {
+      ticketId: "test-1",
+      ticketTitle: "Test ticket",
+    };
+
+    const result = await hookExecutor.executeAction(action, context, {
+      allowShellHooks: true,
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.output?.trim()).toBe("");
+  });
+
+  it("shell hooks receive essential system vars (PATH)", async () => {
+    const action = { type: "shell" as const, command: 'echo "$PATH"' };
+    const context: HookContext = {
+      ticketId: "test-1",
+      ticketTitle: "Test ticket",
+    };
+
+    const result = await hookExecutor.executeAction(action, context, {
+      allowShellHooks: true,
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.output?.trim()).not.toBe("");
+    expect(result.output).toContain("/");
+  });
+});
