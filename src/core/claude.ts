@@ -698,7 +698,11 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
 
     let options: string[] | undefined;
     if (Array.isArray(optionsRaw)) {
-      options = optionsRaw.map(o => String(o));
+      options = optionsRaw.map(o => {
+        if (typeof o === 'string') return o;
+        if (o && typeof o === 'object' && 'label' in o) return String((o as { label: unknown }).label);
+        return String(o);
+      });
     }
 
     const questionId = randomBytes(8).toString('hex');

@@ -585,3 +585,153 @@ describe("Claude Wrapper - Error Handling", () => {
     expect(result.error).toBe("Rate limit exceeded");
   });
 });
+
+// =============================================================================
+// Question Option Parsing Tests
+// =============================================================================
+
+describe("Claude Wrapper - Question Option Parsing", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function buildQuestionEvent(toolInput: Record<string, unknown>): string {
+    return JSON.stringify({
+      type: "tool_use",
+      tool_name: "AskUserQuestion",
+      tool_input: toolInput,
+    });
+  }
+
+  const resultEvent = JSON.stringify({
+    type: "result",
+    result: "Done",
+    cost_usd: 0.01,
+    session_id: "q-sess",
+  });
+
+  it("string options pass through unchanged", async () => {
+    let capturedQuestion: { id: string; text: string; options?: string[] } | undefined;
+
+    const mockProc = createMockProcess({
+      stdout: [
+        buildQuestionEvent({
+          question: "Which approach?",
+          options: ["Option A", "Option B"],
+        }) + "\n",
+        resultEvent + "\n",
+      ],
+      exitCode: 0,
+      closeDelay: 10,
+      closeAfterStdout: 200,
+    });
+    mockSpawn.mockReturnValue(mockProc);
+
+    const callbacks: ExecutionCallbacks = {
+      onQuestion: async (q) => {
+        capturedQuestion = q;
+        return "mock answer";
+      },
+    };
+
+    await claude.execute("Ask something", {}, callbacks);
+
+    expect(capturedQuestion).toBeDefined();
+    expect(capturedQuestion!.text).toBe("Which approach?");
+    expect(capturedQuestion!.options).toEqual(["Option A", "Option B"]);
+  });
+
+  it("object options with label property extract label", async () => {
+    let capturedQuestion: { id: string; text: string; options?: string[] } | undefined;
+
+    const mockProc = createMockProcess({
+      stdout: [
+        buildQuestionEvent({
+          question: "Pick one",
+          options: [{ label: "Foo" }, { label: "Bar" }],
+        }) + "\n",
+        resultEvent + "\n",
+      ],
+      exitCode: 0,
+      closeDelay: 10,
+      closeAfterStdout: 200,
+    });
+    mockSpawn.mockReturnValue(mockProc);
+
+    const callbacks: ExecutionCallbacks = {
+      onQuestion: async (q) => {
+        capturedQuestion = q;
+        return "mock answer";
+      },
+    };
+
+    await claude.execute("Ask something", {}, callbacks);
+
+    expect(capturedQuestion).toBeDefined();
+    expect(capturedQuestion!.options).toEqual(["Foo", "Bar"]);
+  });
+
+  it("mixed string and object options handled correctly", async () => {
+    let capturedQuestion: { id: string; text: string; options?: string[] } | undefined;
+
+    const mockProc = createMockProcess({
+      stdout: [
+        buildQuestionEvent({
+          question: "Choose wisely",
+          options: ["plain", { label: "structured" }],
+        }) + "\n",
+        resultEvent + "\n",
+      ],
+      exitCode: 0,
+      closeDelay: 10,
+      closeAfterStdout: 200,
+    });
+    mockSpawn.mockReturnValue(mockProc);
+
+    const callbacks: ExecutionCallbacks = {
+      onQuestion: async (q) => {
+        capturedQuestion = q;
+        return "mock answer";
+      },
+    };
+
+    await claude.execute("Ask something", {}, callbacks);
+
+    expect(capturedQuestion).toBeDefined();
+    expect(capturedQuestion!.options).toEqual(["plain", "structured"]);
+  });
+
+  it("missing options passed as undefined", async () => {
+    let capturedQuestion: { id: string; text: string; options?: string[] } | undefined;
+
+    const mockProc = createMockProcess({
+      stdout: [
+        buildQuestionEvent({
+          question: "Yes or no?",
+        }) + "\n",
+        resultEvent + "\n",
+      ],
+      exitCode: 0,
+      closeDelay: 10,
+      closeAfterStdout: 200,
+    });
+    mockSpawn.mockReturnValue(mockProc);
+
+    const callbacks: ExecutionCallbacks = {
+      onQuestion: async (q) => {
+        capturedQuestion = q;
+        return "mock answer";
+      },
+    };
+
+    await claude.execute("Ask something", {}, callbacks);
+
+    expect(capturedQuestion).toBeDefined();
+    expect(capturedQuestion!.text).toBe("Yes or no?");
+    expect(capturedQuestion!.options).toBeUndefined();
+  });
+});
