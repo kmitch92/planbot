@@ -21,6 +21,7 @@ import { claude } from "./claude.js";
 import { hookExecutor, type HookContext } from "./hooks.js";
 import type { Multiplexer } from "../messaging/multiplexer.js";
 import { logger } from "../utils/logger.js";
+import { isRateLimitError, shouldFallback } from "./rate-limit-detection.js";
 
 // =============================================================================
 // Types and Interfaces
@@ -625,12 +626,39 @@ class OrchestratorImpl
       return `[DRY RUN] Plan for: ${ticket.title}\n\n${ticket.description}`;
     }
 
-    const result = await claude.generatePlan(prompt, {
-      model: config.model,
+    // Store current model and fallback model
+    const currentModel = config.model;
+    const fallbackModel = config.fallbackModel;
+
+    // First attempt with current model
+    let result = await claude.generatePlan(prompt, {
+      model: currentModel,
       timeout: config.timeouts.planGeneration,
       cwd: this.projectRoot,
       verbose: this.verbose,
     }, (text) => this.handleOutput(ticket, text));
+
+    // Check for rate limit and attempt fallback if applicable
+    if (isRateLimitError({
+      success: result.success,
+      error: result.error,
+      costUsd: result.costUsd,
+      outputLength: result.plan?.length
+    }) && shouldFallback(currentModel, fallbackModel)) {
+      logger.warn('Claude rate limit hit, retrying with fallback model', {
+        ticketId: ticket.id,
+        originalModel: currentModel || 'CLI default',
+        fallbackModel,
+      });
+
+      // Retry with fallback model
+      result = await claude.generatePlan(prompt, {
+        model: fallbackModel,
+        timeout: config.timeouts.planGeneration,
+        cwd: this.projectRoot,
+        verbose: this.verbose,
+      }, (text) => this.handleOutput(ticket, text));
+    }
 
     if (!result.success) {
       throw new Error(result.error ?? "Plan generation failed with unknown error");
@@ -741,6 +769,61 @@ class OrchestratorImpl
           }
         );
 
+        // Rate limit detection and automatic fallback
+        if (
+          isRateLimitError({ success: result.success, error: result.error, costUsd: result.costUsd }) &&
+          shouldFallback(config.model, config.fallbackModel)
+        ) {
+          logger.warn("Claude rate limit hit during execution, retrying with fallback", {
+            ticketId: ticket.id,
+            originalModel: config.model || "CLI default",
+            fallbackModel: config.fallbackModel,
+          });
+
+          // Retry with fallback model
+          const fallbackResult = await claude.execute(
+            prompt,
+            {
+              model: config.fallbackModel,
+              skipPermissions: isAutonomous || config.skipPermissions,
+              timeout: config.timeouts.execution,
+              cwd: this.projectRoot,
+              verbose: this.verbose,
+            },
+            {
+              onEvent: (event) => this.handleClaudeEvent(ticket, event),
+              onQuestion: (q) => this.handleQuestion(ticket, q, config, hooks),
+              onOutput: (text) => this.handleOutput(ticket, text),
+            }
+          );
+
+          // If fallback succeeds, complete the ticket and return
+          if (fallbackResult.success) {
+            if (fallbackResult.sessionId) {
+              await stateManager.saveSession(this.projectRoot, ticket.id, fallbackResult.sessionId);
+              await this.updateState({ sessionId: fallbackResult.sessionId });
+            }
+
+            ticket.status = "completed";
+            await this.saveTicketsFile();
+            await markTicketCompleteInFile(this.ticketsFilePath, ticket.id);
+            await this.executeHooks(hooks, "onComplete", {
+              ticketId: ticket.id,
+              ticketTitle: ticket.title,
+            });
+            this.emit("ticket:completed", ticket);
+            this.multiplexer.broadcastStatus({
+              ticketId: ticket.id,
+              ticketTitle: ticket.title,
+              status: "completed",
+            }).catch(err => logger.warn("Failed to broadcast status", { error: String(err) }));
+            return;
+          }
+
+          // If fallback fails, throw error to trigger normal retry logic
+          throw new Error(fallbackResult.error ?? "Fallback execution failed");
+        }
+
         if (result.sessionId) {
           await stateManager.saveSession(this.projectRoot, ticket.id, result.sessionId);
           await this.updateState({ sessionId: result.sessionId });
@@ -795,11 +878,14 @@ class OrchestratorImpl
     hooks?: Hooks
   ): Promise<void> {
     const isAutonomous = (ticket.planMode ?? config.planMode) === false || config.autoApprove;
-    const result = await claude.resume(
+    const currentModel = config.model;
+    const fallbackModel = config.fallbackModel;
+
+    let result = await claude.resume(
       sessionId,
       "Continue from where you left off.",
       {
-        model: config.model,
+        model: currentModel,
         skipPermissions: isAutonomous || config.skipPermissions,
         timeout: config.timeouts.execution,
         cwd: this.projectRoot,
@@ -811,6 +897,36 @@ class OrchestratorImpl
         onOutput: (text) => this.handleOutput(ticket, text),
       }
     );
+
+    // Check for rate limit and attempt fallback if applicable
+    if (
+      isRateLimitError({ success: result.success, error: result.error, costUsd: result.costUsd }) &&
+      shouldFallback(currentModel, fallbackModel)
+    ) {
+      logger.warn("Rate limit hit on resume, retrying with fallback", {
+        ticketId: ticket.id,
+        sessionId,
+        originalModel: currentModel || "CLI default",
+        fallbackModel,
+      });
+
+      result = await claude.resume(
+        sessionId,
+        "Continue from where you left off.",
+        {
+          model: fallbackModel,
+          skipPermissions: isAutonomous || config.skipPermissions,
+          timeout: config.timeouts.execution,
+          cwd: this.projectRoot,
+          verbose: this.verbose,
+        },
+        {
+          onEvent: (event) => this.handleClaudeEvent(ticket, event),
+          onQuestion: (q) => this.handleQuestion(ticket, q, config, hooks),
+          onOutput: (text) => this.handleOutput(ticket, text),
+        }
+      );
+    }
 
     if (result.success) {
       ticket.status = "completed";
@@ -999,13 +1115,42 @@ class OrchestratorImpl
 
     // Build Claude runner for prompt hooks (unless passive mode for onQuestion)
     const claudeRunner = options?.passivePrompts ? undefined : async (prompt: string) => {
-      const result = await claude.runPrompt(prompt, {
-        model: config?.model,
+      const currentModel = config?.model;
+      const fallbackModel = config?.fallbackModel ?? "sonnet";
+
+      let result = await claude.runPrompt(prompt, {
+        model: currentModel,
         cwd: this.projectRoot,
         timeout: 300000,
         skipPermissions: config?.skipPermissions,
         verbose: this.verbose,
       });
+
+      // Check for rate limit and attempt fallback if applicable
+      if (
+        isRateLimitError({
+          success: result.success,
+          error: result.error,
+          costUsd: result.costUsd,
+          outputLength: result.output?.length,
+        }) &&
+        shouldFallback(currentModel, fallbackModel)
+      ) {
+        logger.warn('Rate limit hit in hook, retrying with fallback', {
+          promptLength: prompt.slice(0, 100),
+          originalModel: currentModel || 'CLI default',
+          fallbackModel,
+        });
+
+        result = await claude.runPrompt(prompt, {
+          model: fallbackModel,
+          cwd: this.projectRoot,
+          timeout: 300000,
+          skipPermissions: config?.skipPermissions,
+          verbose: this.verbose,
+        });
+      }
+
       return {
         success: result.success,
         output: result.output,
