@@ -91,7 +91,7 @@ tickets:
   - id: feature-001
     title: AI answers plans
     description: |
-      I'd like to be ablec to have the option to have external AI apis answer the plans and questions, in the event that a user is busy and decides to use this feature. this should template the host repo's readme into the prompt, along with the ticket description and perhaps also some of the conversation history from claude. i want this to be strictly optional and not break any existing functionality.
+      I'd like to be able to have the option to have external AI apis answer the plans and questions, in the event that a user is busy and decides to use this feature. this should template the host repo's readme into the prompt, along with the ticket description and perhaps also some of the conversation history from claude. i want this to be strictly optional and not break any existing functionality.
       
   - id: feature-001
     title: add ticket via telegram
