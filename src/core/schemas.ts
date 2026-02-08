@@ -182,6 +182,20 @@ export const TicketStatusSchema = z.enum([
   "skipped",
 ]);
 
+// =============================================================================
+// Image Support
+// =============================================================================
+
+export const SUPPORTED_IMAGE_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.bmp', '.tiff'] as const;
+export const MAX_IMAGES_PER_TICKET = 10;
+
+export const ImagePathSchema = z.string().min(1).max(500)
+  .refine(val => !val.includes('..'), { message: 'Path must not contain ..' })
+  .refine(val => {
+    const ext = val.slice(val.lastIndexOf('.')).toLowerCase();
+    return (SUPPORTED_IMAGE_EXTENSIONS as readonly string[]).includes(ext);
+  }, { message: 'Unsupported image format' });
+
 export const TicketSchema = z.object({
   /** Unique ticket identifier */
   id: z.string().min(1).max(100),
@@ -201,6 +215,8 @@ export const TicketSchema = z.object({
   hooks: HooksSchema.partial().optional(),
   /** Arbitrary metadata for extensibility */
   metadata: z.record(z.string(), z.unknown()).optional(),
+  /** Attached image paths relative to project root */
+  images: z.array(ImagePathSchema).max(MAX_IMAGES_PER_TICKET).optional(),
   /** Override global planMode for this ticket. When false, skips plan generation and executes directly. */
   planMode: z.boolean().optional(),
   /** Whether the ticket has been completed (persisted to YAML for restart resilience) */
@@ -320,6 +336,7 @@ export type Question = z.infer<typeof QuestionSchema>;
 // =============================================================================
 
 export type TicketInput = z.input<typeof TicketSchema>;
+export type ImagePath = z.infer<typeof ImagePathSchema>;
 export type ConfigInput = z.input<typeof ConfigSchema>;
 export type TicketsFileInput = z.input<typeof TicketsFileSchema>;
 export type StateInput = z.input<typeof StateSchema>;
