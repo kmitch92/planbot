@@ -80,12 +80,14 @@ tickets:
     title: Update Readme 
     description: |
       We've just done a fair bit of work updating this app. i'd like you to make sure the readme is updated properly.
+    complete: true
 
   - id: test-002
     title: Security audit
     description: |
       Since we will be calling external APIs like telegram with this app, i'd like you to plan and execute a full security audit
 
+    complete: true
   - id: feature-001
     title: AI answers plans
     description: |
