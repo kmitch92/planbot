@@ -1,5 +1,14 @@
 import React, { useState, useCallback } from 'react';
 import { Box, Text, useInput, useApp } from 'ink';
+import { MainMenu } from './screens/main-menu.js';
+import { Dashboard } from './screens/dashboard.js';
+import { TicketList } from './screens/ticket-list.js';
+import { TicketDetail } from './screens/ticket-detail.js';
+import { TicketWizard } from './screens/ticket-wizard.js';
+import { ConfigEditor } from './screens/config-editor.js';
+import { EnvManager } from './screens/env-manager.js';
+import { QueueControl } from './screens/queue-control.js';
+import { LogsViewer } from './screens/logs-viewer.js';
 
 type Screen =
   | 'main-menu'
@@ -12,19 +21,6 @@ type Screen =
   | 'guides'
   | 'queue-control'
   | 'logs-viewer';
-
-const SCREEN_LABELS: Record<Screen, string> = {
-  'main-menu': 'Main Menu',
-  dashboard: 'Dashboard',
-  'ticket-list': 'Ticket List',
-  'ticket-detail': 'Ticket Detail',
-  'ticket-wizard': 'Ticket Wizard',
-  'config-editor': 'Config Editor',
-  'env-manager': 'Environment Manager',
-  guides: 'Guides',
-  'queue-control': 'Queue Control',
-  'logs-viewer': 'Logs Viewer',
-};
 
 const App: React.FC = () => {
   const { exit } = useApp();
@@ -39,6 +35,13 @@ const App: React.FC = () => {
     [],
   );
 
+  const handleNavigate = useCallback(
+    (s: string, ctx?: Record<string, unknown>) => {
+      navigate(s as Screen, ctx);
+    },
+    [navigate],
+  );
+
   useInput((input, key) => {
     if (key.escape && screen !== 'main-menu') {
       navigate('main-menu');
@@ -48,40 +51,37 @@ const App: React.FC = () => {
   const renderScreen = (): React.ReactNode => {
     switch (screen) {
       case 'main-menu':
-        return (
-          <Box flexDirection="column" padding={1}>
-            <Text bold color="cyan">
-              Planbot TUI
-            </Text>
-            <Text>{' '}</Text>
-            {(Object.keys(SCREEN_LABELS) as Screen[])
-              .filter((s) => s !== 'main-menu')
-              .map((s) => (
-                <Text key={s} color="white">
-                  - {SCREEN_LABELS[s]}
-                </Text>
-              ))}
-            <Text>{' '}</Text>
-            <Text dimColor>Press Esc to return here from any screen</Text>
-          </Box>
-        );
+        return <MainMenu onNavigate={handleNavigate} onExit={exit} />;
       case 'dashboard':
+        return <Dashboard onNavigate={handleNavigate} />;
       case 'ticket-list':
+        return <TicketList onNavigate={handleNavigate} />;
       case 'ticket-detail':
+        return (
+          <TicketDetail
+            ticketId={(context.ticketId as string) ?? ''}
+            onNavigate={handleNavigate}
+          />
+        );
       case 'ticket-wizard':
+        return <TicketWizard onNavigate={handleNavigate} />;
       case 'config-editor':
+        return <ConfigEditor onNavigate={handleNavigate} />;
       case 'env-manager':
+        return <EnvManager onNavigate={handleNavigate} />;
       case 'guides':
-      case 'queue-control':
-      case 'logs-viewer':
         return (
           <Box flexDirection="column" padding={1}>
             <Text bold color="cyan">
-              {SCREEN_LABELS[screen]}
+              Guides
             </Text>
-            <Text dimColor>Placeholder - Press Esc to return to main menu</Text>
+            <Text dimColor>Coming soon — Press Esc to return</Text>
           </Box>
         );
+      case 'queue-control':
+        return <QueueControl onNavigate={handleNavigate} />;
+      case 'logs-viewer':
+        return <LogsViewer onNavigate={handleNavigate} />;
     }
   };
 
