@@ -681,6 +681,7 @@ class OrchestratorImpl
 
     let retries = 0;
     const maxRetries = config.maxRetries;
+    const isAutonomous = (ticket.planMode ?? config.planMode) === false || config.autoApprove;
 
     while (retries <= maxRetries) {
       try {
@@ -688,7 +689,7 @@ class OrchestratorImpl
           prompt,
           {
             model: config.model,
-            skipPermissions: config.skipPermissions,
+            skipPermissions: isAutonomous || config.skipPermissions,
             timeout: config.timeouts.execution,
             cwd: this.projectRoot,
             verbose: this.verbose,
@@ -753,12 +754,13 @@ class OrchestratorImpl
     config: Config,
     hooks?: Hooks
   ): Promise<void> {
+    const isAutonomous = (ticket.planMode ?? config.planMode) === false || config.autoApprove;
     const result = await claude.resume(
       sessionId,
       "Continue from where you left off.",
       {
         model: config.model,
-        skipPermissions: config.skipPermissions,
+        skipPermissions: isAutonomous || config.skipPermissions,
         timeout: config.timeouts.execution,
         cwd: this.projectRoot,
         verbose: this.verbose,
@@ -826,6 +828,30 @@ class OrchestratorImpl
       .filter((r) => r.success && r.output)
       .map((r) => r.output!)
       .join("\n");
+
+    // Auto-answer in autonomous mode (planMode disabled or autoApprove enabled)
+    const usePlanMode = ticket.planMode ?? config.planMode;
+    const isAutonomous = !usePlanMode || config.autoApprove;
+    if (isAutonomous) {
+      let autoAnswer: string;
+      if (question.options && question.options.length > 0) {
+        const recommended = question.options.find(o =>
+          o.toLowerCase().includes('(recommended)')
+        );
+        autoAnswer = recommended ?? question.options[0];
+      } else {
+        autoAnswer = 'use your best judgement';
+      }
+
+      logger.info('Auto-answering question (autonomous mode)', {
+        ticketId: ticket.id,
+        question: question.text.slice(0, 100),
+        answer: autoAnswer,
+        reason: !usePlanMode ? 'planMode disabled' : 'autoApprove enabled',
+      });
+
+      return promptHints ? `${autoAnswer}\n\nContext:\n${promptHints}` : autoAnswer;
+    }
 
     // Save pending question to state
     const pendingQuestion: PendingQuestion = {
