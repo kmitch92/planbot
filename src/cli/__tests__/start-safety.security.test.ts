@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { ZodError } from "zod";
 import { createStartCommand } from "../commands/start.js";
 
 // =============================================================================
@@ -185,5 +186,56 @@ describe("Autonomous Mode Safety Interlock", () => {
       consoleErrorCalls.includes("safety interlock");
 
     expect(hasAutonomousRejection).toBe(false);
+  });
+});
+
+// =============================================================================
+// skipPermissions YAML Override Protection
+// =============================================================================
+
+describe("skipPermissions YAML override protection", () => {
+  const minimalTicket = {
+    id: "test",
+    title: "Test",
+    description: "Test desc",
+  };
+
+  it("rejects skipPermissions: true in YAML config", async () => {
+    const { parseTicketsFile } = await vi.importActual<
+      typeof import("../../core/schemas.js")
+    >("../../core/schemas.js");
+
+    expect(() =>
+      parseTicketsFile({
+        config: { skipPermissions: true },
+        tickets: [minimalTicket],
+      })
+    ).toThrow(ZodError);
+  });
+
+  it("accepts skipPermissions: false in YAML config", async () => {
+    const { parseTicketsFile } = await vi.importActual<
+      typeof import("../../core/schemas.js")
+    >("../../core/schemas.js");
+
+    const result = parseTicketsFile({
+      config: { skipPermissions: false },
+      tickets: [minimalTicket],
+    });
+
+    expect(result.config.skipPermissions).toBe(false);
+  });
+
+  it("accepts config without skipPermissions and defaults to false", async () => {
+    const { parseTicketsFile } = await vi.importActual<
+      typeof import("../../core/schemas.js")
+    >("../../core/schemas.js");
+
+    const result = parseTicketsFile({
+      config: {},
+      tickets: [minimalTicket],
+    });
+
+    expect(result.config.skipPermissions).toBe(false);
   });
 });

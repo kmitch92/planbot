@@ -150,8 +150,11 @@ export const ConfigSchema = z.object({
   autoApprove: z.boolean().default(false),
   /** Whether to generate a plan before execution (default: true). When false, tickets execute directly from their description. */
   planMode: z.boolean().default(true),
-  /** Skip permission prompts (dangerous mode) */
-  skipPermissions: z.boolean().default(false),
+  /** Skip permission prompts (dangerous mode) — CLI-only, rejected in YAML config */
+  skipPermissions: z.boolean().default(false).refine(
+    (val) => val === false,
+    { message: "skipPermissions cannot be enabled via config file. Use the --skip-permissions CLI flag." }
+  ),
   /** Enable shell hook execution (default: false for security) */
   allowShellHooks: z.boolean().default(false),
   /** Messaging provider configuration */
