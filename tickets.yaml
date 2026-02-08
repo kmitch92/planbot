@@ -49,7 +49,6 @@ hooks:
   afterEach:
     - type: prompt
       command: /commit
-
   # onPlanGenerated:
   #   - type: prompt
   #     prompt: Review the generated plan and identify any risks or missing steps
@@ -64,20 +63,20 @@ hooks:
   #   - type: shell
   #     command: echo "${PLANBOT_TICKET_ID} completed successfully"
 
-# =============================================================================
-# Tickets
-# =============================================================================
-#
-# Required fields: id, title, description
-# Optional fields: priority, planMode, acceptanceCriteria, dependencies, hooks, metadata
-#
-# planMode (default: true):
-#   true  — generate a plan, wait for approval, then execute
-#   false — skip planning and approval, execute directly from description
-#
+  # =============================================================================
+  # Tickets
+  # =============================================================================
+  #
+  # Required fields: id, title, description
+  # Optional fields: priority, planMode, acceptanceCriteria, dependencies, hooks, metadata
+  #
+  # planMode (default: true):
+  #   true  — generate a plan, wait for approval, then execute
+  #   false — skip planning and approval, execute directly from description
+  #
 tickets:
   - id: test-001
-    title: Update Readme 
+    title: Update Readme
     description: |
       We've just done a fair bit of work updating this app. i'd like you to make sure the readme is updated properly.
     complete: true
@@ -86,15 +85,14 @@ tickets:
     title: Security audit
     description: |
       Since we will be calling external APIs like telegram with this app, i'd like you to plan and execute a full security audit
-
     complete: true
+
   - id: feature-001
     title: AI answers plans
     description: |
-      I'd like to be able to have the option to have external AI apis answer the plans and questions, in the event that a user is busy and decides to use this feature. this should template the host repo's readme into the prompt, along with the ticket description and perhaps also some of the conversation history from claude. i want this to be strictly optional and not break any existing functionality.
-      
+      I'd like to be ablec to have the option to have external AI apis answer the plans and questions, in the event that a user is busy and decides to use this feature. this should template the host repo's readme into the prompt, along with the ticket description and perhaps also some of the conversation history from claude. i want this to be strictly optional and not break any existing functionality.
+
   - id: feature-001
     title: add ticket via telegram
     description: |
       it's plausible that the list of plans will run out. i'd like the user to be able to send a ticket via the telegram bot. picking the create ticket command should lead the user through a ticket creation flow, where they answer questions and so on.
-
