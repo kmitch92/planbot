@@ -33,6 +33,8 @@ export interface WebhookServerConfig {
   corsOrigins?: string[];
   /** Allow starting without a secret (insecure mode) */
   insecure?: boolean;
+  /** Host/IP address to bind to (default: '127.0.0.1') */
+  host?: string;
 }
 
 /**
@@ -105,7 +107,7 @@ interface PendingState {
  * ```
  */
 export function createWebhookServer(config: WebhookServerConfig): WebhookServer {
-  const { port, path, secret, cors = false, corsOrigins, insecure } = config;
+  const { port, path, secret, cors = false, corsOrigins, insecure, host = '127.0.0.1' } = config;
 
   let app: Application;
   let server: Server | null = null;
@@ -414,8 +416,8 @@ export function createWebhookServer(config: WebhookServerConfig): WebhookServer 
 
       return new Promise((resolve, reject) => {
         try {
-          server = app.listen(port, () => {
-            const url = `http://localhost:${port}${basePath}`;
+          server = app.listen(port, host, () => {
+            const url = `http://${host}:${port}${basePath}`;
             logger.info(`Webhook server started at ${url}`);
             resolve();
           });
@@ -464,7 +466,7 @@ export function createWebhookServer(config: WebhookServerConfig): WebhookServer 
     },
 
     getUrl(): string {
-      return `http://localhost:${port}${basePath}`;
+      return `http://${host}:${port}${basePath}`;
     },
   };
 }

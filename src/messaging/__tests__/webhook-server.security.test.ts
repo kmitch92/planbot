@@ -109,7 +109,7 @@ describe("Webhook Server Security - HMAC Signature Verification", () => {
 
   it("accepts signature when raw body matches exactly", async () => {
     const rawBody = '{"planId":"plan-exact","approved":false,"rejectionReason":"test"}';
-    
+
     const signature = crypto
       .createHmac("sha256", secret)
       .update(rawBody)
@@ -122,5 +122,49 @@ describe("Webhook Server Security - HMAC Signature Verification", () => {
     });
 
     expect(status).toBe(200);
+  });
+});
+
+describe("Webhook Security - Bind Address", () => {
+  let server: WebhookServer;
+
+  afterEach(async () => {
+    if (server?.isRunning()) {
+      await server.stop();
+    }
+  });
+
+  it("binds to 127.0.0.1 by default", async () => {
+    server = createWebhookServer({
+      port: 3894,
+      path: "/webhook",
+      insecure: true,
+    });
+    await server.start();
+
+    const { status, body } = await httpRequest(
+      "http://127.0.0.1:3894/webhook/health"
+    );
+
+    expect(status).toBe(200);
+    expect(body).toMatchObject({ status: "ok" });
+    expect(server.getUrl()).toBe("http://127.0.0.1:3894/webhook");
+  });
+
+  it("accepts explicit host override", async () => {
+    server = createWebhookServer({
+      port: 3895,
+      path: "/webhook",
+      insecure: true,
+      host: "127.0.0.1",
+    });
+    await server.start();
+
+    const { status, body } = await httpRequest(
+      "http://127.0.0.1:3895/webhook/health"
+    );
+
+    expect(status).toBe(200);
+    expect(body).toMatchObject({ status: "ok" });
   });
 });
