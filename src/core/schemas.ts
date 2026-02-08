@@ -140,6 +140,8 @@ export const ModelSchema = z.enum(["sonnet", "opus", "haiku"]);
 export const ConfigSchema = z.object({
   /** Claude model override — omit to use your Claude CLI default */
   model: ModelSchema.optional(),
+  /** Fallback model to use when rate limits are hit */
+  fallbackModel: ModelSchema.default("sonnet"),
   /** Maximum budget in dollars per ticket */
   maxBudgetPerTicket: z.number().positive().default(10),
   /** Maximum retry attempts for failed operations */
