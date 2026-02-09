@@ -17,7 +17,6 @@ const MENU_ITEMS: MenuItem[] = [
   { label: '\u2699  Edit Config', value: 'config-editor' },
   { label: '\u{1F511}  Manage Env Vars', value: 'env-manager' },
   { label: '\u{1F4D6}  Guides', value: 'guides' },
-  { label: '\u{1F4C4}  View Logs', value: 'logs-viewer' },
   { label: '\u2715  Exit', value: 'exit' },
 ];
 

@@ -8,7 +8,6 @@ import { TicketWizard } from './screens/ticket-wizard.js';
 import { ConfigEditor } from './screens/config-editor.js';
 import { EnvManager } from './screens/env-manager.js';
 import { QueueControl } from './screens/queue-control.js';
-import { LogsViewer } from './screens/logs-viewer.js';
 import { Guides } from './screens/guides.js';
 
 type Screen =
@@ -20,8 +19,7 @@ type Screen =
   | 'config-editor'
   | 'env-manager'
   | 'guides'
-  | 'queue-control'
-  | 'logs-viewer';
+  | 'queue-control';
 
 const App: React.FC = () => {
   const { exit } = useApp();
@@ -74,8 +72,6 @@ const App: React.FC = () => {
         return <Guides onNavigate={handleNavigate} />;
       case 'queue-control':
         return <QueueControl onNavigate={handleNavigate} />;
-      case 'logs-viewer':
-        return <LogsViewer onNavigate={handleNavigate} />;
     }
   };
 
