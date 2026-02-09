@@ -26,7 +26,7 @@ vi.mock('../hooks/use-planbot-state.js', () => ({
       lastUpdatedAt: '2025-01-01T01:00:00.000Z',
       pendingQuestions: [],
     },
-    paths: { root: '.planbot', state: '.planbot/state.json', plans: '.planbot/plans', logs: '.planbot/logs', questions: '.planbot/questions', sessions: '.planbot/sessions' },
+    paths: { root: '.planbot', state: '.planbot/state.json', plans: '.planbot/plans', questions: '.planbot/questions', sessions: '.planbot/sessions' },
     loading: false,
     error: null,
     reload: vi.fn(),
@@ -80,7 +80,7 @@ vi.mock('ink', async () => {
 vi.mock('../../core/state.js', () => ({
   stateManager: {
     load: vi.fn().mockResolvedValue({ currentPhase: 'idle', currentTicketId: null, pendingQuestions: [] }),
-    getPaths: vi.fn().mockReturnValue({ root: '.planbot', logs: '.planbot/logs', plans: '.planbot/plans', state: '.planbot/state.json', questions: '.planbot/questions', sessions: '.planbot/sessions' }),
+    getPaths: vi.fn().mockReturnValue({ root: '.planbot', plans: '.planbot/plans', state: '.planbot/state.json', questions: '.planbot/questions', sessions: '.planbot/sessions' }),
     loadPlan: vi.fn().mockResolvedValue(null),
   },
 }));
@@ -99,7 +99,6 @@ import { ConfigEditor } from '../screens/config-editor.js';
 import { EnvManager } from '../screens/env-manager.js';
 import { QueueControl } from '../screens/queue-control.js';
 import { Guides } from '../screens/guides.js';
-import { LogsViewer } from '../screens/logs-viewer.js';
 
 describe('MainMenu screen', () => {
   it('renders the Planbot title', () => {
@@ -123,7 +122,6 @@ describe('MainMenu screen', () => {
     expect(frame).toContain('Edit Config');
     expect(frame).toContain('Manage Env Vars');
     expect(frame).toContain('Guides');
-    expect(frame).toContain('View Logs');
     expect(frame).toContain('Exit');
     unmount();
   });
@@ -347,25 +345,3 @@ describe('Guides screen', () => {
   });
 });
 
-describe('LogsViewer screen', () => {
-  it('renders the Logs title', () => {
-    const { lastFrame, unmount } = render(
-      <LogsViewer onNavigate={vi.fn()} />,
-    );
-    const frame = lastFrame();
-    expect(frame).toContain('Logs');
-    unmount();
-  });
-
-  it('shows ticket list for log selection', () => {
-    const { lastFrame, unmount } = render(
-      <LogsViewer onNavigate={vi.fn()} />,
-    );
-    const frame = lastFrame();
-    expect(frame).toContain('test-1');
-    expect(frame).toContain('Test Ticket');
-    expect(frame).toContain('test-2');
-    expect(frame).toContain('Done Ticket');
-    unmount();
-  });
-});

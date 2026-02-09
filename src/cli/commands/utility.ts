@@ -511,7 +511,6 @@ export function createClearCommand(): Command {
           console.log(chalk.yellow('\nThis will delete:'));
           console.log(chalk.dim('  - .planbot/state.json'));
           console.log(chalk.dim('  - .planbot/plans/'));
-          console.log(chalk.dim('  - .planbot/logs/'));
           console.log(chalk.dim('  - .planbot/sessions/'));
           console.log(chalk.dim('  - .planbot/questions/'));
           console.log(chalk.dim('\nUse --confirm to skip this prompt.'));

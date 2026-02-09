@@ -217,7 +217,7 @@ planbot start --allow-shell-hooks --verbose
 - `--dry-run`: Simulate execution without making changes
 - `--auto-approve`: Auto-approve all plans (bypass approval workflow)
 - `--skip-permissions`: Skip permission prompts (dangerous)
-- `-v, --verbose`: Enable verbose Claude output logging to `.planbot/logs/`
+- `-v, --verbose`: Enable verbose console output
 - `-C, --continuous`: Keep running and prompt for new plans after completion
 - `--continuous-timeout <ms>`: Timeout for next plan prompt (default: 1 hour)
 - `--allow-shell-hooks`: Allow shell hook execution from tickets.yaml (disabled by default)

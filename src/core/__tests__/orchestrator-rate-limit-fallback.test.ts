@@ -41,7 +41,6 @@ vi.mock("../state.js", () => ({
     loadPlan: vi.fn().mockResolvedValue(null),
     saveSession: vi.fn().mockResolvedValue(undefined),
     loadSession: vi.fn().mockResolvedValue(null),
-    appendLog: vi.fn().mockResolvedValue(undefined),
     addPendingQuestion: vi.fn().mockResolvedValue(undefined),
     removePendingQuestion: vi.fn().mockResolvedValue(undefined),
   },

@@ -196,7 +196,7 @@ export function createStartCommand(): Command {
     .option('--i-accept-autonomous-risk', 'Required when using --skip-permissions with --auto-approve')
     .option('-C, --continuous', 'Keep running and prompt for new plans after completion')
     .option('--continuous-timeout <ms>', 'Timeout for next plan prompt (default: 1 hour)', parseInt)
-    .option('-v, --verbose', 'Enable verbose Claude output logging to .planbot/logs/')
+    .option('-v, --verbose', 'Enable verbose console output')
     .action(async (ticketsFile: string, options: StartOptions) => {
       // Safety interlock: reject fully autonomous mode without explicit acknowledgment
       if (options.skipPermissions && options.autoApprove && !options.iAcceptAutonomousRisk) {
