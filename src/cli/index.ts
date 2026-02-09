@@ -11,7 +11,6 @@ import { createStartCommand } from './commands/start.js';
 import { createResumeCommand } from './commands/resume.js';
 import { createStatusCommand } from './commands/status.js';
 import { createListCommand } from './commands/list.js';
-import { createLogsCommand } from './commands/logs.js';
 import {
   createApproveCommand,
   createRejectCommand,
@@ -63,7 +62,6 @@ program.addCommand(createStartCommand());
 program.addCommand(createResumeCommand());
 program.addCommand(createStatusCommand());
 program.addCommand(createListCommand());
-program.addCommand(createLogsCommand());
 
 // Control commands
 program.addCommand(createApproveCommand());
