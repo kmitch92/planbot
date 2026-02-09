@@ -46,7 +46,6 @@ describe("StateManager", () => {
       const { access } = await import("node:fs/promises");
 
       await expect(access(paths.plans)).resolves.toBeUndefined();
-      await expect(access(paths.logs)).resolves.toBeUndefined();
       await expect(access(paths.questions)).resolves.toBeUndefined();
       await expect(access(paths.sessions)).resolves.toBeUndefined();
     });
@@ -458,61 +457,6 @@ describe("StateManager", () => {
   // ===========================================================================
   // Log Appending (~3 tests)
   // ===========================================================================
-
-  describe("Log Appending", () => {
-    it("appendLog() creates log file if missing", async () => {
-      await stateManager.init(testDir);
-
-      const ticketId = "TICKET-LOG-001";
-      const entry = "First log entry";
-
-      await stateManager.appendLog(testDir, ticketId, entry);
-
-      const paths = stateManager.getPaths(testDir);
-      const logPath = join(paths.logs, `${ticketId}.log`);
-      const content = await readFile(logPath, "utf-8");
-
-      expect(content).toContain(entry);
-    });
-
-    it("appendLog() appends timestamped entry", async () => {
-      await stateManager.init(testDir);
-
-      const ticketId = "TICKET-LOG-002";
-      const entry = "Test entry with timestamp";
-
-      const beforeAppend = new Date().toISOString().slice(0, 10);
-      await stateManager.appendLog(testDir, ticketId, entry);
-
-      const paths = stateManager.getPaths(testDir);
-      const logPath = join(paths.logs, `${ticketId}.log`);
-      const content = await readFile(logPath, "utf-8");
-
-      expect(content).toMatch(/^\[.*\] Test entry with timestamp\n$/);
-      expect(content).toContain(beforeAppend);
-    });
-
-    it("appendLog() preserves existing content", async () => {
-      await stateManager.init(testDir);
-
-      const ticketId = "TICKET-LOG-003";
-
-      await stateManager.appendLog(testDir, ticketId, "Entry 1");
-      await stateManager.appendLog(testDir, ticketId, "Entry 2");
-      await stateManager.appendLog(testDir, ticketId, "Entry 3");
-
-      const paths = stateManager.getPaths(testDir);
-      const logPath = join(paths.logs, `${ticketId}.log`);
-      const content = await readFile(logPath, "utf-8");
-
-      expect(content).toContain("Entry 1");
-      expect(content).toContain("Entry 2");
-      expect(content).toContain("Entry 3");
-
-      const lines = content.trim().split("\n");
-      expect(lines).toHaveLength(3);
-    });
-  });
 
   // ===========================================================================
   // Clear and Reset (~2 tests)

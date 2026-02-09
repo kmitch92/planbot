@@ -14,12 +14,14 @@ import {
   validateTicketDependencies,
   TicketSchema,
 } from "./schemas.js";
+import { resolveAndValidateImages, buildImagePromptSection } from "./images.js";
 import { stateManager } from "./state.js";
 import { markTicketCompleteInFile } from "./tickets-io.js";
 import { claude } from "./claude.js";
 import { hookExecutor, type HookContext } from "./hooks.js";
 import type { Multiplexer } from "../messaging/multiplexer.js";
 import { logger } from "../utils/logger.js";
+import { isRateLimitError, shouldFallback } from "./rate-limit-detection.js";
 
 // =============================================================================
 // Types and Interfaces
@@ -482,6 +484,11 @@ class OrchestratorImpl
 
     const mergedHooks = hookExecutor.mergeHooks(globalHooks, ticket.hooks);
 
+    // Resolve images once for all prompt builders
+    const { resolved: resolvedImagePaths, warnings: imageWarnings } = ticket.images?.length
+      ? await resolveAndValidateImages(this.projectRoot, ticket.images)
+      : { resolved: [] as string[], warnings: [] as string[] };
+
     this.emit("ticket:start", ticket);
     this.multiplexer.broadcastStatus({
       ticketId: ticket.id,
@@ -511,7 +518,7 @@ class OrchestratorImpl
         ticket.status = "planning";
         await this.saveTicketsFile();
 
-        const plan = await this.generatePlan(ticket, config, feedback);
+        const plan = await this.generatePlan(ticket, config, feedback, resolvedImagePaths, imageWarnings);
 
         // Save plan
         const planPath = await stateManager.savePlan(this.projectRoot, ticket.id, plan);
@@ -553,7 +560,7 @@ class OrchestratorImpl
           }).catch(err => logger.warn("Failed to broadcast status", { error: String(err) }));
 
           // Phase: Executing
-          await this.executeTicket(ticket, plan, config, mergedHooks);
+          await this.executeTicket(ticket, plan, config, mergedHooks, resolvedImagePaths, imageWarnings);
           break;
         }
 
@@ -595,8 +602,8 @@ class OrchestratorImpl
       // Direct execution mode — skip planning and approval
       logger.info("Plan mode disabled, executing directly");
 
-      const directPrompt = this.buildDirectExecutionPrompt(ticket);
-      await this.executeTicket(ticket, directPrompt, config, mergedHooks);
+      const directPrompt = this.buildDirectExecutionPrompt(ticket, resolvedImagePaths, imageWarnings);
+      await this.executeTicket(ticket, directPrompt, config, mergedHooks, resolvedImagePaths, imageWarnings);
     }
 
     // Execute afterEach hooks
@@ -609,22 +616,49 @@ class OrchestratorImpl
     logger.clearContext();
   }
 
-  private async generatePlan(ticket: Ticket, config: Config, feedback?: string): Promise<string> {
+  private async generatePlan(ticket: Ticket, config: Config, feedback?: string, resolvedImagePaths: string[] = [], imageWarnings: string[] = []): Promise<string> {
     logger.info("Generating plan");
 
-    const prompt = this.buildPlanPrompt(ticket, feedback);
+    const prompt = this.buildPlanPrompt(ticket, feedback, resolvedImagePaths, imageWarnings);
 
     if (this.dryRun) {
       logger.info("Dry run: skipping actual plan generation");
       return `[DRY RUN] Plan for: ${ticket.title}\n\n${ticket.description}`;
     }
 
-    const result = await claude.generatePlan(prompt, {
-      model: config.model,
+    // Store current model and fallback model
+    const currentModel = config.model;
+    const fallbackModel = config.fallbackModel;
+
+    // First attempt with current model
+    let result = await claude.generatePlan(prompt, {
+      model: currentModel,
       timeout: config.timeouts.planGeneration,
       cwd: this.projectRoot,
       verbose: this.verbose,
     }, (text) => this.handleOutput(ticket, text));
+
+    // Check for rate limit and attempt fallback if applicable
+    if (isRateLimitError({
+      success: result.success,
+      error: result.error,
+      costUsd: result.costUsd,
+      outputLength: result.plan?.length
+    }) && shouldFallback(currentModel, fallbackModel)) {
+      logger.warn('Claude rate limit hit, retrying with fallback model', {
+        ticketId: ticket.id,
+        originalModel: currentModel || 'CLI default',
+        fallbackModel,
+      });
+
+      // Retry with fallback model
+      result = await claude.generatePlan(prompt, {
+        model: fallbackModel,
+        timeout: config.timeouts.planGeneration,
+        cwd: this.projectRoot,
+        verbose: this.verbose,
+      }, (text) => this.handleOutput(ticket, text));
+    }
 
     if (!result.success) {
       throw new Error(result.error ?? "Plan generation failed with unknown error");
@@ -687,7 +721,9 @@ class OrchestratorImpl
     ticket: Ticket,
     plan: string,
     config: Config,
-    hooks?: Hooks
+    hooks?: Hooks,
+    resolvedImagePaths: string[] = [],
+    imageWarnings: string[] = [],
   ): Promise<void> {
     await this.updateState({ currentPhase: "executing" });
     ticket.status = "executing";
@@ -695,7 +731,7 @@ class OrchestratorImpl
 
     this.emit("ticket:executing", ticket);
 
-    const prompt = this.buildExecutionPrompt(ticket, plan);
+    const prompt = this.buildExecutionPrompt(ticket, plan, resolvedImagePaths, imageWarnings);
 
     if (this.dryRun) {
       logger.info("Dry run: skipping actual execution");
@@ -732,6 +768,61 @@ class OrchestratorImpl
             onOutput: (text) => this.handleOutput(ticket, text),
           }
         );
+
+        // Rate limit detection and automatic fallback
+        if (
+          isRateLimitError({ success: result.success, error: result.error, costUsd: result.costUsd }) &&
+          shouldFallback(config.model, config.fallbackModel)
+        ) {
+          logger.warn("Claude rate limit hit during execution, retrying with fallback", {
+            ticketId: ticket.id,
+            originalModel: config.model || "CLI default",
+            fallbackModel: config.fallbackModel,
+          });
+
+          // Retry with fallback model
+          const fallbackResult = await claude.execute(
+            prompt,
+            {
+              model: config.fallbackModel,
+              skipPermissions: isAutonomous || config.skipPermissions,
+              timeout: config.timeouts.execution,
+              cwd: this.projectRoot,
+              verbose: this.verbose,
+            },
+            {
+              onEvent: (event) => this.handleClaudeEvent(ticket, event),
+              onQuestion: (q) => this.handleQuestion(ticket, q, config, hooks),
+              onOutput: (text) => this.handleOutput(ticket, text),
+            }
+          );
+
+          // If fallback succeeds, complete the ticket and return
+          if (fallbackResult.success) {
+            if (fallbackResult.sessionId) {
+              await stateManager.saveSession(this.projectRoot, ticket.id, fallbackResult.sessionId);
+              await this.updateState({ sessionId: fallbackResult.sessionId });
+            }
+
+            ticket.status = "completed";
+            await this.saveTicketsFile();
+            await markTicketCompleteInFile(this.ticketsFilePath, ticket.id);
+            await this.executeHooks(hooks, "onComplete", {
+              ticketId: ticket.id,
+              ticketTitle: ticket.title,
+            });
+            this.emit("ticket:completed", ticket);
+            this.multiplexer.broadcastStatus({
+              ticketId: ticket.id,
+              ticketTitle: ticket.title,
+              status: "completed",
+            }).catch(err => logger.warn("Failed to broadcast status", { error: String(err) }));
+            return;
+          }
+
+          // If fallback fails, throw error to trigger normal retry logic
+          throw new Error(fallbackResult.error ?? "Fallback execution failed");
+        }
 
         if (result.sessionId) {
           await stateManager.saveSession(this.projectRoot, ticket.id, result.sessionId);
@@ -787,11 +878,14 @@ class OrchestratorImpl
     hooks?: Hooks
   ): Promise<void> {
     const isAutonomous = (ticket.planMode ?? config.planMode) === false || config.autoApprove;
-    const result = await claude.resume(
+    const currentModel = config.model;
+    const fallbackModel = config.fallbackModel;
+
+    let result = await claude.resume(
       sessionId,
       "Continue from where you left off.",
       {
-        model: config.model,
+        model: currentModel,
         skipPermissions: isAutonomous || config.skipPermissions,
         timeout: config.timeouts.execution,
         cwd: this.projectRoot,
@@ -803,6 +897,36 @@ class OrchestratorImpl
         onOutput: (text) => this.handleOutput(ticket, text),
       }
     );
+
+    // Check for rate limit and attempt fallback if applicable
+    if (
+      isRateLimitError({ success: result.success, error: result.error, costUsd: result.costUsd }) &&
+      shouldFallback(currentModel, fallbackModel)
+    ) {
+      logger.warn("Rate limit hit on resume, retrying with fallback", {
+        ticketId: ticket.id,
+        sessionId,
+        originalModel: currentModel || "CLI default",
+        fallbackModel,
+      });
+
+      result = await claude.resume(
+        sessionId,
+        "Continue from where you left off.",
+        {
+          model: fallbackModel,
+          skipPermissions: isAutonomous || config.skipPermissions,
+          timeout: config.timeouts.execution,
+          cwd: this.projectRoot,
+          verbose: this.verbose,
+        },
+        {
+          onEvent: (event) => this.handleClaudeEvent(ticket, event),
+          onQuestion: (q) => this.handleQuestion(ticket, q, config, hooks),
+          onOutput: (text) => this.handleOutput(ticket, text),
+        }
+      );
+    }
 
     if (result.success) {
       ticket.status = "completed";
@@ -832,9 +956,6 @@ class OrchestratorImpl
     const eventLine = `[${event.type}] ${event.message ?? ""}`;
     this.emit("ticket:output", ticket, eventLine);
     this.emit("ticket:event", ticket, { type: event.type, toolName: event.toolName, message: event.message });
-    stateManager.appendLog(this.projectRoot, ticket.id, eventLine).catch((err) => {
-      logger.warn("Failed to append log", { error: String(err) });
-    });
   }
 
   private async handleQuestion(
@@ -853,7 +974,7 @@ class OrchestratorImpl
       ticketTitle: ticket.title,
       question: question.text,
       questionId: question.id,
-    });
+    }, { passivePrompts: true });
 
     // Check if any prompt hooks provide guidance
     const promptHints = hookResults
@@ -928,9 +1049,6 @@ class OrchestratorImpl
 
   private handleOutput(ticket: Ticket, text: string): void {
     this.emit("ticket:output", ticket, text);
-    stateManager.appendLog(this.projectRoot, ticket.id, text).catch((err) => {
-      logger.warn("Failed to append output log", { error: String(err) });
-    });
   }
 
   // ===========================================================================
@@ -983,10 +1101,58 @@ class OrchestratorImpl
   private async executeHooks(
     hooks: Hooks | undefined,
     name: keyof Hooks,
-    context: HookContext
+    context: HookContext,
+    options?: { passivePrompts?: boolean }
   ) {
     const allowShellHooks = this.ticketsFile?.config?.allowShellHooks ?? false;
-    return hookExecutor.executeNamed(hooks, name, context, { allowShellHooks });
+    const config = this.ticketsFile?.config;
+
+    // Build Claude runner for prompt hooks (unless passive mode for onQuestion)
+    const claudeRunner = options?.passivePrompts ? undefined : async (prompt: string) => {
+      const currentModel = config?.model;
+      const fallbackModel = config?.fallbackModel ?? "sonnet";
+
+      let result = await claude.runPrompt(prompt, {
+        model: currentModel,
+        cwd: this.projectRoot,
+        timeout: 300000,
+        skipPermissions: config?.skipPermissions,
+        verbose: this.verbose,
+      });
+
+      // Check for rate limit and attempt fallback if applicable
+      if (
+        isRateLimitError({
+          success: result.success,
+          error: result.error,
+          costUsd: result.costUsd,
+          outputLength: result.output?.length,
+        }) &&
+        shouldFallback(currentModel, fallbackModel)
+      ) {
+        logger.warn('Rate limit hit in hook, retrying with fallback', {
+          promptLength: prompt.slice(0, 100),
+          originalModel: currentModel || 'CLI default',
+          fallbackModel,
+        });
+
+        result = await claude.runPrompt(prompt, {
+          model: fallbackModel,
+          cwd: this.projectRoot,
+          timeout: 300000,
+          skipPermissions: config?.skipPermissions,
+          verbose: this.verbose,
+        });
+      }
+
+      return {
+        success: result.success,
+        output: result.output,
+        error: result.error,
+      };
+    };
+
+    return hookExecutor.executeNamed(hooks, name, context, { allowShellHooks, claudeRunner });
   }
 
   private findTicket(ticketId: string): Ticket | undefined {
@@ -1036,7 +1202,7 @@ class OrchestratorImpl
     return `plan-${ticketId}-${randomBytes(4).toString("hex")}`;
   }
 
-  private buildPlanPrompt(ticket: Ticket, feedback?: string): string {
+  private buildPlanPrompt(ticket: Ticket, feedback?: string, resolvedImagePaths: string[] = [], imageWarnings: string[] = []): string {
     const parts = [
       `# Task: ${ticket.title}`,
       "",
@@ -1049,6 +1215,11 @@ class OrchestratorImpl
       for (const criterion of ticket.acceptanceCriteria) {
         parts.push(`- ${criterion}`);
       }
+    }
+
+    const imageSection = buildImagePromptSection(resolvedImagePaths, imageWarnings);
+    if (imageSection) {
+      parts.push("", imageSection);
     }
 
     if (feedback) {
@@ -1075,7 +1246,7 @@ class OrchestratorImpl
     return parts.join("\n");
   }
 
-  private buildDirectExecutionPrompt(ticket: Ticket): string {
+  private buildDirectExecutionPrompt(ticket: Ticket, resolvedImagePaths: string[] = [], imageWarnings: string[] = []): string {
     const parts = [
       `# Task: ${ticket.title}`,
       "",
@@ -1090,10 +1261,15 @@ class OrchestratorImpl
       }
     }
 
+    const imageSection = buildImagePromptSection(resolvedImagePaths, imageWarnings);
+    if (imageSection) {
+      parts.push("", imageSection);
+    }
+
     return parts.join("\n");
   }
 
-  private buildExecutionPrompt(ticket: Ticket, plan: string): string {
+  private buildExecutionPrompt(ticket: Ticket, plan: string, resolvedImagePaths: string[] = [], imageWarnings: string[] = []): string {
     const parts = [
       `# Execute Task: ${ticket.title}`,
       "",
@@ -1111,6 +1287,11 @@ class OrchestratorImpl
       for (const criterion of ticket.acceptanceCriteria) {
         parts.push(`- [ ] ${criterion}`);
       }
+    }
+
+    const imageSection = buildImagePromptSection(resolvedImagePaths, imageWarnings);
+    if (imageSection) {
+      parts.push("", imageSection);
     }
 
     return parts.join("\n");

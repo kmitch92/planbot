@@ -15,6 +15,7 @@ import {
   type TicketsFile,
 } from '../../core/schemas.js';
 import { createWebhookServer } from '../../messaging/webhook-server.js';
+import { resolveAndValidateImages, buildImagePromptSection } from '../../core/images.js';
 import { fileExists } from '../../utils/fs.js';
 import { logger } from '../../utils/logger.js';
 
@@ -124,6 +125,18 @@ export function createValidateCommand(): Command {
           for (const ticket of data.tickets) {
             if (ticket.description.trim().length < 10) {
               results.warnings.push(`Ticket ${ticket.id} has a very short description`);
+            }
+          }
+
+          // Check image paths exist
+          for (const ticket of data.tickets) {
+            if (ticket.images) {
+              for (const imgPath of ticket.images) {
+                const absPath = resolve(cwd, imgPath);
+                if (!(await fileExists(absPath))) {
+                  results.warnings.push(`Ticket ${ticket.id}: image not found: ${imgPath}`);
+                }
+              }
             }
           }
         }
@@ -241,8 +254,13 @@ export function createPlanCommand(): Command {
 
         spinner.text = `Generating plan for: ${ticket.title}...`;
 
+        // Resolve images if present
+        const { resolved: resolvedImagePaths, warnings: imageWarnings } = ticket.images?.length
+          ? await resolveAndValidateImages(cwd, ticket.images)
+          : { resolved: [] as string[], warnings: [] as string[] };
+
         // Build prompt
-        const prompt = buildPlanPrompt(ticket);
+        const prompt = buildPlanPrompt(ticket, resolvedImagePaths, imageWarnings);
 
         // Generate plan
         const result = await claude.generatePlan(prompt, {
@@ -287,7 +305,7 @@ export function createPlanCommand(): Command {
     });
 }
 
-function buildPlanPrompt(ticket: Ticket): string {
+function buildPlanPrompt(ticket: Ticket, resolvedImagePaths: string[] = [], imageWarnings: string[] = []): string {
   const parts = [
     `# Task: ${ticket.title}`,
     '',
@@ -300,6 +318,11 @@ function buildPlanPrompt(ticket: Ticket): string {
     for (const criterion of ticket.acceptanceCriteria) {
       parts.push(`- ${criterion}`);
     }
+  }
+
+  const imageSection = buildImagePromptSection(resolvedImagePaths, imageWarnings);
+  if (imageSection) {
+    parts.push('', imageSection);
   }
 
   parts.push(
@@ -488,7 +511,6 @@ export function createClearCommand(): Command {
           console.log(chalk.yellow('\nThis will delete:'));
           console.log(chalk.dim('  - .planbot/state.json'));
           console.log(chalk.dim('  - .planbot/plans/'));
-          console.log(chalk.dim('  - .planbot/logs/'));
           console.log(chalk.dim('  - .planbot/sessions/'));
           console.log(chalk.dim('  - .planbot/questions/'));
           console.log(chalk.dim('\nUse --confirm to skip this prompt.'));

@@ -467,3 +467,96 @@ describe("Environment Variable Injection", () => {
     expect(result.output).toContain("executing");
   });
 });
+
+// =============================================================================
+// Prompt Hook Execution with claudeRunner
+// =============================================================================
+
+describe("Prompt Hook Execution with claudeRunner", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("calls claudeRunner when provided for prompt hooks", async () => {
+    const mockClaudeRunner = vi.fn().mockResolvedValue({
+      success: true,
+      output: "Claude analyzed the changes",
+    });
+
+    const action = createPromptAction("Review the changes carefully");
+    const context = createContext();
+
+    const result = await hookExecutor.executeAction(action, context, {
+      claudeRunner: mockClaudeRunner,
+    });
+
+    expect(mockClaudeRunner).toHaveBeenCalledWith("Review the changes carefully");
+    expect(result.success).toBe(true);
+    expect(result.output).toBe("Claude analyzed the changes");
+  });
+
+  it("returns runner failure when claudeRunner fails", async () => {
+    const mockClaudeRunner = vi.fn().mockResolvedValue({
+      success: false,
+      error: "Claude failed",
+    });
+
+    const action = createPromptAction("Do something complex");
+    const context = createContext();
+
+    const result = await hookExecutor.executeAction(action, context, {
+      claudeRunner: mockClaudeRunner,
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toBe("Claude failed");
+  });
+
+  it("falls back to passive hint when no claudeRunner provided", async () => {
+    const action = createPromptAction("Review the changes carefully");
+    const context = createContext();
+
+    const result = await hookExecutor.executeAction(action, context);
+
+    expect(result.success).toBe(true);
+    expect(result.output).toBe("Review the changes carefully");
+  });
+
+  it("does not call claudeRunner for shell hooks", async () => {
+    const mockClaudeRunner = vi.fn().mockResolvedValue({
+      success: true,
+      output: "Should not be called",
+    });
+
+    const action = createShellAction('echo "shell command"');
+    const context = createContext();
+
+    await hookExecutor.executeAction(action, context, {
+      allowShellHooks: true,
+      claudeRunner: mockClaudeRunner,
+    });
+
+    expect(mockClaudeRunner).not.toHaveBeenCalled();
+  });
+
+  it("stops on runner failure in hook array", async () => {
+    const mockClaudeRunner = vi.fn().mockResolvedValue({
+      success: false,
+      error: "Runner failed",
+    });
+
+    const hook: Hook = [
+      createPromptAction("First prompt - will fail via runner"),
+      createPromptAction("Second prompt - should not execute"),
+    ];
+    const context = createContext();
+
+    const results = await hookExecutor.executeHook(hook, context, {
+      claudeRunner: mockClaudeRunner,
+    });
+
+    expect(results).toHaveLength(1);
+    expect(results[0]?.success).toBe(false);
+    expect(mockClaudeRunner).toHaveBeenCalledTimes(1);
+  });
+});

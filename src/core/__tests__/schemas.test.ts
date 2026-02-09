@@ -20,6 +20,9 @@ import {
   validateTicketDependencies,
   resolveEnvVars,
   resolveMessagingConfig,
+  ImagePathSchema,
+  SUPPORTED_IMAGE_EXTENSIONS,
+  MAX_IMAGES_PER_TICKET,
 } from "../schemas.js";
 
 // =============================================================================
@@ -659,5 +662,102 @@ describe("resolveMessagingConfig", () => {
 
     expect(resolved.botToken).toBe("discord-bot-token");
     expect(resolved.channelId).toBe("123456789");
+  });
+});
+
+// =============================================================================
+// Image Schema Tests
+// =============================================================================
+
+describe("ImagePathSchema", () => {
+  it("accepts valid relative image paths", () => {
+    const result = ImagePathSchema.safeParse(".planbot/assets/ticket-1/screenshot.png");
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts various supported extensions", () => {
+    for (const ext of SUPPORTED_IMAGE_EXTENSIONS) {
+      const result = ImagePathSchema.safeParse(`image${ext}`);
+      expect(result.success).toBe(true);
+    }
+  });
+
+  it("rejects path traversal with ..", () => {
+    const result = ImagePathSchema.safeParse("../../../etc/passwd.png");
+    expect(result.success).toBe(false);
+    expect(result.error?.issues[0]?.message).toContain("Path must not contain ..");
+  });
+
+  it("rejects unsupported file extensions", () => {
+    const result = ImagePathSchema.safeParse("document.pdf");
+    expect(result.success).toBe(false);
+    expect(result.error?.issues[0]?.message).toContain("Unsupported image format");
+  });
+
+  it("rejects empty string", () => {
+    const result = ImagePathSchema.safeParse("");
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects paths exceeding 500 characters", () => {
+    const result = ImagePathSchema.safeParse("a".repeat(501) + ".png");
+    expect(result.success).toBe(false);
+  });
+
+  it("accepts case-insensitive extensions", () => {
+    const result = ImagePathSchema.safeParse("IMAGE.PNG");
+    expect(result.success).toBe(true);
+  });
+});
+
+describe("TicketSchema images field", () => {
+  it("accepts ticket without images (optional)", () => {
+    const result = TicketSchema.parse({
+      id: "test-1",
+      title: "Test",
+      description: "Test description",
+    });
+    expect(result.images).toBeUndefined();
+  });
+
+  it("accepts ticket with valid images array", () => {
+    const result = TicketSchema.parse({
+      id: "test-1",
+      title: "Test",
+      description: "Test description",
+      images: [".planbot/assets/test-1/shot.png", ".planbot/assets/test-1/mock.jpg"],
+    });
+    expect(result.images).toHaveLength(2);
+  });
+
+  it("accepts ticket with empty images array", () => {
+    const result = TicketSchema.parse({
+      id: "test-1",
+      title: "Test",
+      description: "Test description",
+      images: [],
+    });
+    expect(result.images).toEqual([]);
+  });
+
+  it("rejects images exceeding max count", () => {
+    const images = Array.from({ length: MAX_IMAGES_PER_TICKET + 1 }, (_, i) => `img${i}.png`);
+    const result = TicketSchema.safeParse({
+      id: "test-1",
+      title: "Test",
+      description: "Test description",
+      images,
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects images with invalid paths", () => {
+    const result = TicketSchema.safeParse({
+      id: "test-1",
+      title: "Test",
+      description: "Test description",
+      images: ["../bad/path.png"],
+    });
+    expect(result.success).toBe(false);
   });
 });

@@ -6,7 +6,6 @@ import {
   fileExists,
   readTextFile,
   writeTextFile,
-  appendToFile,
 } from '../utils/fs.js';
 import { logger } from '../utils/logger.js';
 import {
@@ -31,12 +30,12 @@ export interface PlanbotPaths {
   state: string;
   /** .planbot/plans/ */
   plans: string;
-  /** .planbot/logs/ */
-  logs: string;
   /** .planbot/questions/ */
   questions: string;
   /** .planbot/sessions/ */
   sessions: string;
+  /** .planbot/assets/ */
+  assets: string;
 }
 
 /**
@@ -48,9 +47,9 @@ function getPaths(projectRoot: string): PlanbotPaths {
     root,
     state: join(root, 'state.json'),
     plans: join(root, 'plans'),
-    logs: join(root, 'logs'),
     questions: join(root, 'questions'),
     sessions: join(root, 'sessions'),
+    assets: join(root, 'assets'),
   };
 }
 
@@ -103,9 +102,6 @@ export interface StateManager {
   /** Load a plan for a ticket */
   loadPlan(projectRoot: string, ticketId: string): Promise<string | null>;
 
-  /** Append to ticket log */
-  appendLog(projectRoot: string, ticketId: string, entry: string): Promise<void>;
-
   /** Save pending question */
   addPendingQuestion(projectRoot: string, question: PendingQuestion): Promise<void>;
 
@@ -140,9 +136,9 @@ function createStateManager(): StateManager {
 
       await ensureDir(paths.root);
       await ensureDir(paths.plans);
-      await ensureDir(paths.logs);
       await ensureDir(paths.questions);
       await ensureDir(paths.sessions);
+      await ensureDir(paths.assets);
 
       // Create default state if it doesn't exist
       if (!(await fileExists(paths.state))) {
@@ -233,24 +229,6 @@ function createStateManager(): StateManager {
       const plan = await readTextFile(planPath);
       logger.debug('Plan loaded', { ticketId, length: plan.length });
       return plan;
-    },
-
-    async appendLog(projectRoot: string, ticketId: string, entry: string): Promise<void> {
-      validateTicketId(ticketId);
-      const paths = getPaths(projectRoot);
-      const logPath = join(paths.logs, `${ticketId}.log`);
-      logger.debug('Appending to log', { ticketId, path: logPath });
-
-      // Sanitize: strip ANSI escape sequences and control characters
-      const sanitized = entry
-        .replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '')  // ANSI escape sequences
-        .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '');  // Control chars (except \t \n \r)
-
-      const timestamp = new Date().toISOString();
-      const formattedEntry = `[${timestamp}] ${sanitized}\n`;
-
-      await appendToFile(logPath, formattedEntry);
-      logger.debug('Log entry appended', { ticketId });
     },
 
     async addPendingQuestion(projectRoot: string, question: PendingQuestion): Promise<void> {

@@ -8,7 +8,7 @@ import {
   TicketsFileSchema,
   type Ticket,
 } from "../schemas.js";
-import { markTicketCompleteInFile } from "../tickets-io.js";
+import { markTicketCompleteInFile, addImageToTicketInFile } from "../tickets-io.js";
 
 // =============================================================================
 // Helpers
@@ -450,5 +450,131 @@ describe("markTicketCompleteInFile", () => {
     expect(updated).toContain("autoApprove: true");
     expect(updated).toContain("hooks:");
     expect(updated).toContain("complete: true");
+  });
+});
+
+// =============================================================================
+// addImageToTicketInFile Tests
+// =============================================================================
+
+describe("addImageToTicketInFile", () => {
+  let testDir: string;
+  let yamlPath: string;
+
+  beforeEach(async () => {
+    testDir = await mkdtemp(join(tmpdir(), "planbot-image-io-test-"));
+    yamlPath = join(testDir, "tickets.yaml");
+  });
+
+  afterEach(async () => {
+    await rm(testDir, { recursive: true, force: true });
+  });
+
+  it("creates images array when none exists", async () => {
+    const yaml = [
+      "tickets:",
+      "  - id: t-1",
+      "    title: First ticket",
+      "    description: Do something",
+    ].join("\n");
+
+    await writeFile(yamlPath, yaml, "utf-8");
+    await addImageToTicketInFile(yamlPath, "t-1", ".planbot/assets/t-1/shot.png");
+
+    const updated = await readFile(yamlPath, "utf-8");
+    expect(updated).toContain("images:");
+    expect(updated).toContain(".planbot/assets/t-1/shot.png");
+  });
+
+  it("appends to existing images array", async () => {
+    const yaml = [
+      "tickets:",
+      "  - id: t-1",
+      "    title: First ticket",
+      "    description: Do something",
+      "    images:",
+      "      - .planbot/assets/t-1/existing.png",
+    ].join("\n");
+
+    await writeFile(yamlPath, yaml, "utf-8");
+    await addImageToTicketInFile(yamlPath, "t-1", ".planbot/assets/t-1/new.jpg");
+
+    const updated = await readFile(yamlPath, "utf-8");
+    expect(updated).toContain(".planbot/assets/t-1/existing.png");
+    expect(updated).toContain(".planbot/assets/t-1/new.jpg");
+  });
+
+  it("preserves other ticket fields", async () => {
+    const yaml = [
+      "tickets:",
+      "  - id: t-1",
+      "    title: First ticket",
+      "    description: Do something",
+      "    priority: 5",
+      "    acceptanceCriteria:",
+      "      - Works correctly",
+    ].join("\n");
+
+    await writeFile(yamlPath, yaml, "utf-8");
+    await addImageToTicketInFile(yamlPath, "t-1", ".planbot/assets/t-1/shot.png");
+
+    const updated = await readFile(yamlPath, "utf-8");
+    expect(updated).toContain("priority: 5");
+    expect(updated).toContain("Works correctly");
+    expect(updated).toContain("images:");
+    expect(updated).toContain(".planbot/assets/t-1/shot.png");
+  });
+
+  it("only modifies the correct ticket in a multi-ticket file", async () => {
+    const yaml = [
+      "tickets:",
+      "  - id: t-1",
+      "    title: First ticket",
+      "    description: First desc",
+      "  - id: t-2",
+      "    title: Second ticket",
+      "    description: Second desc",
+    ].join("\n");
+
+    await writeFile(yamlPath, yaml, "utf-8");
+    await addImageToTicketInFile(yamlPath, "t-2", ".planbot/assets/t-2/shot.png");
+
+    const updated = await readFile(yamlPath, "utf-8");
+    expect(updated).toMatch(/id: t-2[\s\S]*?images:/);
+    const t1Section = updated.split("id: t-2")[0];
+    expect(t1Section).not.toContain("images:");
+  });
+
+  it("is a no-op for non-existent ticket ID", async () => {
+    const yaml = [
+      "tickets:",
+      "  - id: t-1",
+      "    title: First ticket",
+      "    description: Do something",
+    ].join("\n");
+
+    await writeFile(yamlPath, yaml, "utf-8");
+    await addImageToTicketInFile(yamlPath, "nonexistent", ".planbot/assets/x/shot.png");
+
+    const updated = await readFile(yamlPath, "utf-8");
+    expect(updated).not.toContain("images:");
+    expect(updated).toBe(yaml);
+  });
+
+  it("preserves YAML comments", async () => {
+    const yaml = [
+      "# This is a comment",
+      "tickets:",
+      "  - id: t-1",
+      "    title: First ticket",
+      "    description: Do something  # inline comment",
+    ].join("\n");
+
+    await writeFile(yamlPath, yaml, "utf-8");
+    await addImageToTicketInFile(yamlPath, "t-1", ".planbot/assets/t-1/shot.png");
+
+    const updated = await readFile(yamlPath, "utf-8");
+    expect(updated).toContain("# This is a comment");
+    expect(updated).toContain("images:");
   });
 });

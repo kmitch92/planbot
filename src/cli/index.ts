@@ -11,7 +11,6 @@ import { createStartCommand } from './commands/start.js';
 import { createResumeCommand } from './commands/resume.js';
 import { createStatusCommand } from './commands/status.js';
 import { createListCommand } from './commands/list.js';
-import { createLogsCommand } from './commands/logs.js';
 import {
   createApproveCommand,
   createRejectCommand,
@@ -27,6 +26,7 @@ import {
   createResetCommand,
   createClearCommand,
 } from './commands/utility.js';
+import { createAttachCommand } from './commands/attach.js';
 
 // =============================================================================
 // Program Setup
@@ -62,7 +62,6 @@ program.addCommand(createStartCommand());
 program.addCommand(createResumeCommand());
 program.addCommand(createStatusCommand());
 program.addCommand(createListCommand());
-program.addCommand(createLogsCommand());
 
 // Control commands
 program.addCommand(createApproveCommand());
@@ -74,6 +73,7 @@ program.addCommand(createStopCommand());
 
 // Utility commands
 program.addCommand(createValidateCommand());
+program.addCommand(createAttachCommand());
 program.addCommand(createPlanCommand());
 program.addCommand(createServeCommand());
 program.addCommand(createResetCommand());
@@ -104,6 +104,15 @@ process.on('unhandledRejection', (reason) => {
   }
 
   process.exit(1);
+});
+
+// =============================================================================
+// Default Action (TUI)
+// =============================================================================
+
+program.action(async () => {
+  const { launchTUI } = await import('../tui/index.js');
+  await launchTUI();
 });
 
 // =============================================================================
