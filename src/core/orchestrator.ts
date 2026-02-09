@@ -956,9 +956,6 @@ class OrchestratorImpl
     const eventLine = `[${event.type}] ${event.message ?? ""}`;
     this.emit("ticket:output", ticket, eventLine);
     this.emit("ticket:event", ticket, { type: event.type, toolName: event.toolName, message: event.message });
-    stateManager.appendLog(this.projectRoot, ticket.id, eventLine).catch((err) => {
-      logger.warn("Failed to append log", { error: String(err) });
-    });
   }
 
   private async handleQuestion(
@@ -1052,9 +1049,6 @@ class OrchestratorImpl
 
   private handleOutput(ticket: Ticket, text: string): void {
     this.emit("ticket:output", ticket, text);
-    stateManager.appendLog(this.projectRoot, ticket.id, text).catch((err) => {
-      logger.warn("Failed to append output log", { error: String(err) });
-    });
   }
 
   // ===========================================================================
