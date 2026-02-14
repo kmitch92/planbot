@@ -10,6 +10,7 @@ import {
   type Config,
   type Hooks,
   type PendingQuestion,
+  type LoopConfig,
   parseTicketsFile,
   validateTicketDependencies,
   TicketSchema,
@@ -22,6 +23,7 @@ import { hookExecutor, type HookContext } from "./hooks.js";
 import type { Multiplexer } from "../messaging/multiplexer.js";
 import { logger } from "../utils/logger.js";
 import { isRateLimitError, shouldFallback } from "./rate-limit-detection.js";
+import { evaluateCondition, type ConditionResult } from "./loop-condition.js";
 
 // =============================================================================
 // Types and Interfaces
@@ -50,6 +52,9 @@ export interface OrchestratorEvents {
   "queue:start": [];
   "queue:complete": [];
   "queue:paused": [];
+  "loop:iteration-start": [ticket: Ticket, iteration: number, maxIterations: number];
+  "loop:iteration-complete": [ticket: Ticket, iteration: number, conditionMet: boolean];
+  "loop:condition-failed": [ticket: Ticket, iteration: number, error: string];
   error: [error: Error];
 }
 
@@ -107,6 +112,7 @@ class OrchestratorImpl
   private pauseRequested = false;
   private stopRequested = false;
   private dynamicTickets: Ticket[] = [];
+  private suppressCompletion = false;
 
   private pendingApprovals = new Map<string, PendingApprovalResolvers>();
   private pendingQuestionAnswers = new Map<string, PendingQuestionResolvers>();
@@ -453,6 +459,16 @@ class OrchestratorImpl
       ticket.id
     );
 
+    // Check for loop state — route to loop execution if mid-loop
+    const currentState = await stateManager.load(this.projectRoot);
+    if (currentState.loopState && ticket.loop) {
+      const plan = await stateManager.loadPlan(this.projectRoot, ticket.id);
+      if (plan) {
+        await this.executeLoopTicket(ticket, plan, config, hooks);
+        return;
+      }
+    }
+
     if (!sessionId) {
       logger.warn("No saved session found, re-executing");
       const plan = await stateManager.loadPlan(this.projectRoot, ticket.id);
@@ -560,7 +576,11 @@ class OrchestratorImpl
           }).catch(err => logger.warn("Failed to broadcast status", { error: String(err) }));
 
           // Phase: Executing
-          await this.executeTicket(ticket, plan, config, mergedHooks, resolvedImagePaths, imageWarnings);
+          if (ticket.loop) {
+            await this.executeLoopTicket(ticket, plan, config, mergedHooks, resolvedImagePaths, imageWarnings);
+          } else {
+            await this.executeTicket(ticket, plan, config, mergedHooks, resolvedImagePaths, imageWarnings);
+          }
           break;
         }
 
@@ -603,7 +623,11 @@ class OrchestratorImpl
       logger.info("Plan mode disabled, executing directly");
 
       const directPrompt = this.buildDirectExecutionPrompt(ticket, resolvedImagePaths, imageWarnings);
-      await this.executeTicket(ticket, directPrompt, config, mergedHooks, resolvedImagePaths, imageWarnings);
+      if (ticket.loop) {
+        await this.executeLoopTicket(ticket, directPrompt, config, mergedHooks, resolvedImagePaths, imageWarnings);
+      } else {
+        await this.executeTicket(ticket, directPrompt, config, mergedHooks, resolvedImagePaths, imageWarnings);
+      }
     }
 
     // Execute afterEach hooks
@@ -804,19 +828,21 @@ class OrchestratorImpl
               await this.updateState({ sessionId: fallbackResult.sessionId });
             }
 
-            ticket.status = "completed";
-            await this.saveTicketsFile();
-            await markTicketCompleteInFile(this.ticketsFilePath, ticket.id);
-            await this.executeHooks(hooks, "onComplete", {
-              ticketId: ticket.id,
-              ticketTitle: ticket.title,
-            });
-            this.emit("ticket:completed", ticket);
-            this.multiplexer.broadcastStatus({
-              ticketId: ticket.id,
-              ticketTitle: ticket.title,
-              status: "completed",
-            }).catch(err => logger.warn("Failed to broadcast status", { error: String(err) }));
+            if (!this.suppressCompletion) {
+              ticket.status = "completed";
+              await this.saveTicketsFile();
+              await markTicketCompleteInFile(this.ticketsFilePath, ticket.id);
+              await this.executeHooks(hooks, "onComplete", {
+                ticketId: ticket.id,
+                ticketTitle: ticket.title,
+              });
+              this.emit("ticket:completed", ticket);
+              this.multiplexer.broadcastStatus({
+                ticketId: ticket.id,
+                ticketTitle: ticket.title,
+                status: "completed",
+              }).catch(err => logger.warn("Failed to broadcast status", { error: String(err) }));
+            }
             return;
           }
 
@@ -830,19 +856,21 @@ class OrchestratorImpl
         }
 
         if (result.success) {
-          ticket.status = "completed";
-          await this.saveTicketsFile();
-          await markTicketCompleteInFile(this.ticketsFilePath, ticket.id);
-          await this.executeHooks(hooks, "onComplete", {
-            ticketId: ticket.id,
-            ticketTitle: ticket.title,
-          });
-          this.emit("ticket:completed", ticket);
-          this.multiplexer.broadcastStatus({
-            ticketId: ticket.id,
-            ticketTitle: ticket.title,
-            status: "completed",
-          }).catch(err => logger.warn("Failed to broadcast status", { error: String(err) }));
+          if (!this.suppressCompletion) {
+            ticket.status = "completed";
+            await this.saveTicketsFile();
+            await markTicketCompleteInFile(this.ticketsFilePath, ticket.id);
+            await this.executeHooks(hooks, "onComplete", {
+              ticketId: ticket.id,
+              ticketTitle: ticket.title,
+            });
+            this.emit("ticket:completed", ticket);
+            this.multiplexer.broadcastStatus({
+              ticketId: ticket.id,
+              ticketTitle: ticket.title,
+              status: "completed",
+            }).catch(err => logger.warn("Failed to broadcast status", { error: String(err) }));
+          }
           return;
         }
 
@@ -875,7 +903,8 @@ class OrchestratorImpl
     ticket: Ticket,
     sessionId: string,
     config: Config,
-    hooks?: Hooks
+    hooks?: Hooks,
+    resumePrompt?: string
   ): Promise<void> {
     const isAutonomous = (ticket.planMode ?? config.planMode) === false || config.autoApprove;
     const currentModel = config.model;
@@ -883,7 +912,7 @@ class OrchestratorImpl
 
     let result = await claude.resume(
       sessionId,
-      "Continue from where you left off.",
+      resumePrompt ?? "Continue from where you left off.",
       {
         model: currentModel,
         skipPermissions: isAutonomous || config.skipPermissions,
@@ -912,7 +941,7 @@ class OrchestratorImpl
 
       result = await claude.resume(
         sessionId,
-        "Continue from where you left off.",
+        resumePrompt ?? "Continue from where you left off.",
         {
           model: fallbackModel,
           skipPermissions: isAutonomous || config.skipPermissions,
@@ -929,22 +958,190 @@ class OrchestratorImpl
     }
 
     if (result.success) {
-      ticket.status = "completed";
-      await this.saveTicketsFile();
-      await markTicketCompleteInFile(this.ticketsFilePath, ticket.id);
-      await this.executeHooks(hooks, "onComplete", {
-        ticketId: ticket.id,
-        ticketTitle: ticket.title,
-      });
-      this.emit("ticket:completed", ticket);
-      this.multiplexer.broadcastStatus({
-        ticketId: ticket.id,
-        ticketTitle: ticket.title,
-        status: "completed",
-      }).catch(err => logger.warn("Failed to broadcast status", { error: String(err) }));
+      if (!this.suppressCompletion) {
+        ticket.status = "completed";
+        await this.saveTicketsFile();
+        await markTicketCompleteInFile(this.ticketsFilePath, ticket.id);
+        await this.executeHooks(hooks, "onComplete", {
+          ticketId: ticket.id,
+          ticketTitle: ticket.title,
+        });
+        this.emit("ticket:completed", ticket);
+        this.multiplexer.broadcastStatus({
+          ticketId: ticket.id,
+          ticketTitle: ticket.title,
+          status: "completed",
+        }).catch(err => logger.warn("Failed to broadcast status", { error: String(err) }));
+      }
     } else {
       throw new Error(result.error ?? "Session resume failed");
     }
+  }
+
+  private async executeLoopTicket(
+    ticket: Ticket,
+    plan: string,
+    config: Config,
+    hooks?: Hooks,
+    resolvedImagePaths: string[] = [],
+    imageWarnings: string[] = [],
+  ): Promise<void> {
+    const loop = ticket.loop!;
+    const maxIterations = loop.maxIterations;
+
+    // Determine start iteration from persisted loopState
+    const currentState = await stateManager.load(this.projectRoot);
+    let startIteration = 0;
+    if (currentState.loopState && currentState.currentTicketId === ticket.id) {
+      startIteration = currentState.loopState.currentIteration;
+      logger.info("Resuming loop from persisted state", {
+        ticketId: ticket.id,
+        startIteration,
+        maxIterations,
+      });
+    }
+
+    this.suppressCompletion = true;
+
+    try {
+      for (let i = startIteration; i < maxIterations; i++) {
+        if (this.pauseRequested || this.stopRequested) {
+          logger.info("Loop paused/stopped", { ticketId: ticket.id, iteration: i });
+          // Persist loopState for resume
+          await stateManager.update(this.projectRoot, {
+            loopState: { currentIteration: i, maxIterations, conditionMet: false },
+          });
+          return;
+        }
+
+        // Persist loopState before each iteration
+        await stateManager.update(this.projectRoot, {
+          loopState: { currentIteration: i, maxIterations, conditionMet: false },
+        });
+
+        this.emit("loop:iteration-start", ticket, i, maxIterations);
+        await this.executeHooks(hooks, "onIterationStart", {
+          ticketId: ticket.id,
+          ticketTitle: ticket.title,
+          iteration: i,
+          maxIterations,
+        });
+
+        logger.info("Starting loop iteration", { ticketId: ticket.id, iteration: i, maxIterations });
+
+        if (i === 0) {
+          // First iteration: use executeTicket to create a new session
+          await this.executeTicket(ticket, plan, config, hooks, resolvedImagePaths, imageWarnings);
+        } else {
+          // Subsequent iterations: resume existing session with iteration prompt
+          const sessionId = await stateManager.loadSession(this.projectRoot, ticket.id);
+          if (!sessionId) {
+            throw new Error(`No session found for loop iteration ${i} of ticket ${ticket.id}`);
+          }
+
+          const iterationPrompt = this.buildIterationPrompt(ticket, i, maxIterations);
+          await this.executeWithSession(ticket, sessionId, config, hooks, iterationPrompt);
+        }
+
+        // Evaluate condition after each iteration
+        let conditionResult: ConditionResult;
+        try {
+          const claudeRunner = async (prompt: string) => {
+            const result = await claude.runPrompt(prompt, {
+              model: config.model,
+              cwd: this.projectRoot,
+              timeout: 300000,
+              verbose: this.verbose,
+            });
+            return { success: result.success, output: result.output, error: result.error };
+          };
+
+          conditionResult = await evaluateCondition(
+            loop.condition,
+            { ticketId: ticket.id, iteration: i, goal: loop.goal },
+            {
+              allowShellHooks: config.allowShellHooks,
+              claudeRunner,
+              cwd: this.projectRoot,
+              timeout: config.timeouts.execution,
+            }
+          );
+        } catch (err) {
+          const error = err instanceof Error ? err : new Error(String(err));
+          this.emit("loop:condition-failed", ticket, i, error.message);
+          logger.error("Loop condition evaluation failed", {
+            ticketId: ticket.id,
+            iteration: i,
+            error: error.message,
+          });
+          // Treat evaluation failure as condition not met, continue loop
+          conditionResult = { met: false, error: error.message };
+        }
+
+        this.emit("loop:iteration-complete", ticket, i, conditionResult.met);
+        await this.executeHooks(hooks, "onIterationComplete", {
+          ticketId: ticket.id,
+          ticketTitle: ticket.title,
+          iteration: i,
+          maxIterations,
+          conditionMet: conditionResult.met,
+        });
+
+        if (conditionResult.met) {
+          logger.info("Loop condition met", { ticketId: ticket.id, iteration: i });
+          break;
+        }
+
+        logger.info("Loop condition not met, continuing", {
+          ticketId: ticket.id,
+          iteration: i,
+          maxIterations,
+          conditionOutput: conditionResult.output?.slice(0, 200),
+        });
+      }
+    } finally {
+      this.suppressCompletion = false;
+    }
+
+    // Mark ticket as completed after loop finishes
+    ticket.status = "completed";
+    await this.saveTicketsFile();
+    await markTicketCompleteInFile(this.ticketsFilePath, ticket.id);
+    await this.executeHooks(hooks, "onComplete", {
+      ticketId: ticket.id,
+      ticketTitle: ticket.title,
+    });
+    this.emit("ticket:completed", ticket);
+    this.multiplexer.broadcastStatus({
+      ticketId: ticket.id,
+      ticketTitle: ticket.title,
+      status: "completed",
+    }).catch(err => logger.warn("Failed to broadcast status", { error: String(err) }));
+
+    // Clear loopState
+    await stateManager.update(this.projectRoot, { loopState: null });
+  }
+
+  private buildIterationPrompt(ticket: Ticket, iteration: number, maxIterations: number): string {
+    const loop = ticket.loop!;
+    const parts = [
+      `# Continue: ${ticket.title}`,
+      ``,
+      `This is iteration ${iteration + 1} of ${maxIterations}.`,
+      ``,
+      `## Goal`,
+      loop.goal,
+      ``,
+      `## Completion Condition`,
+      loop.condition.type === "shell"
+        ? `Shell command: \`${loop.condition.command}\` (exit 0 = condition met)`
+        : `Prompt evaluation: ${loop.condition.command}`,
+      ``,
+      `## Instructions`,
+      `Continue working toward the goal. Review your prior progress in this session and make further progress.`,
+      `Do not repeat work already done. Focus on what remains.`,
+    ];
+    return parts.join("\n");
   }
 
   // ===========================================================================
