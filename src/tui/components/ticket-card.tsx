@@ -8,6 +8,7 @@ export interface TicketCardProps {
   title: string;
   status: string;
   priority: number;
+  loopProgress?: { iteration: number; maxIterations: number } | null;
   isSelected?: boolean;
 }
 
@@ -16,6 +17,7 @@ export function TicketCard({
   title,
   status,
   priority,
+  loopProgress = null,
   isSelected = false,
 }: TicketCardProps): React.JSX.Element {
   return (
@@ -28,6 +30,11 @@ export function TicketCard({
       <Text wrap="truncate">{title}</Text>
       {priority > 0 && (
         <Text color={getPriorityColor(priority)}>P{priority}</Text>
+      )}
+      {loopProgress && (
+        <Text color={COLORS.muted}>
+          ({loopProgress.iteration + 1}/{loopProgress.maxIterations})
+        </Text>
       )}
     </Box>
   );
