@@ -129,6 +129,38 @@ export const HooksSchema = z.object({
   onApproval: HookSchema.optional(),
   /** Runs when a ticket completes successfully */
   onComplete: HookSchema.optional(),
+  /** Runs at the start of each loop iteration */
+  onIterationStart: HookSchema.optional(),
+  /** Runs after each loop iteration completes */
+  onIterationComplete: HookSchema.optional(),
+});
+
+// =============================================================================
+// Loop Ticket Configuration
+// =============================================================================
+
+export const ShellConditionSchema = z.object({
+  type: z.literal("shell"),
+  command: z.string().min(1).max(10000),
+});
+
+export const PromptConditionSchema = z.object({
+  type: z.literal("prompt"),
+  command: z.string().min(1).max(50000),
+});
+
+export const LoopConditionSchema = z.discriminatedUnion("type", [
+  ShellConditionSchema,
+  PromptConditionSchema,
+]);
+
+export const LoopConfigSchema = z.object({
+  /** What the loop is trying to achieve */
+  goal: z.string().min(1).max(50000),
+  /** Condition that determines when the loop is complete */
+  condition: LoopConditionSchema,
+  /** Maximum number of iterations before stopping (default: 10, max: 100) */
+  maxIterations: z.number().int().min(1).max(100).default(10),
 });
 
 // =============================================================================
@@ -221,6 +253,8 @@ export const TicketSchema = z.object({
   images: z.array(ImagePathSchema).max(MAX_IMAGES_PER_TICKET).optional(),
   /** Override global planMode for this ticket. When false, skips plan generation and executes directly. */
   planMode: z.boolean().optional(),
+  /** Loop configuration for iterative execution */
+  loop: LoopConfigSchema.optional(),
   /** Whether the ticket has been completed (persisted to YAML for restart resilience) */
   complete: z.boolean().default(false),
 });
@@ -273,6 +307,15 @@ export const StateSchema = z.object({
   lastUpdatedAt: z.string().datetime(),
   /** Questions awaiting user response */
   pendingQuestions: z.array(PendingQuestionSchema).default([]),
+  /** Loop iteration state for pause/resume */
+  loopState: z.object({
+    /** Current iteration (0-indexed) */
+    currentIteration: z.number().int().nonnegative(),
+    /** Maximum iterations configured */
+    maxIterations: z.number().int().positive(),
+    /** Whether the completion condition has been met */
+    conditionMet: z.boolean(),
+  }).nullable().default(null),
 });
 
 // =============================================================================
@@ -329,6 +372,11 @@ export type TicketsFile = z.infer<typeof TicketsFileSchema>;
 export type Phase = z.infer<typeof PhaseSchema>;
 export type PendingQuestion = z.infer<typeof PendingQuestionSchema>;
 export type State = z.infer<typeof StateSchema>;
+
+export type ShellCondition = z.infer<typeof ShellConditionSchema>;
+export type PromptCondition = z.infer<typeof PromptConditionSchema>;
+export type LoopCondition = z.infer<typeof LoopConditionSchema>;
+export type LoopConfig = z.infer<typeof LoopConfigSchema>;
 
 export type QuestionOption = z.infer<typeof QuestionOptionSchema>;
 export type Question = z.infer<typeof QuestionSchema>;
@@ -454,6 +502,7 @@ export function createDefaultState(): State {
     startedAt: now,
     lastUpdatedAt: now,
     pendingQuestions: [],
+    loopState: null,
   };
 }
 

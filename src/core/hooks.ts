@@ -32,6 +32,13 @@ export interface HookContext {
   /** Rejection reason (for onApproval hook) */
   rejectionReason?: string;
 
+  /** Current loop iteration (for loop tickets) */
+  iteration?: number;
+  /** Maximum iterations configured (for loop tickets) */
+  maxIterations?: number;
+  /** Whether the loop condition was met (for loop tickets) */
+  conditionMet?: boolean;
+
   /** Custom metadata - extensible */
   [key: string]: unknown;
 }
@@ -213,6 +220,15 @@ function buildEnvVars(
   }
   if (context.rejectionReason !== undefined) {
     env.PLANBOT_REJECTION_REASON = sanitizeEnvValue(String(context.rejectionReason));
+  }
+  if (context.iteration !== undefined) {
+    env.PLANBOT_ITERATION = String(context.iteration);
+  }
+  if (context.maxIterations !== undefined) {
+    env.PLANBOT_MAX_ITERATIONS = String(context.maxIterations);
+  }
+  if (context.conditionMet !== undefined) {
+    env.PLANBOT_CONDITION_MET = context.conditionMet ? 'true' : 'false';
   }
 
   return env;
@@ -436,6 +452,8 @@ function createHookExecutor(): HookExecutor {
         "onPlanGenerated",
         "onApproval",
         "onComplete",
+        "onIterationStart",
+        "onIterationComplete",
       ];
 
       const merged: Hooks = {};
