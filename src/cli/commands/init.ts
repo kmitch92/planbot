@@ -10,7 +10,7 @@ import { logger } from '../../utils/logger.js';
 // Templates
 // =============================================================================
 
-const BASIC_TEMPLATE = `# Planbot Tickets
+export const BASIC_TEMPLATE = `# Planbot Tickets
 # Run \`planbot start --help\` for CLI options
 
 tickets:
@@ -31,7 +31,7 @@ tickets:
     #   estimate: 2h
 `;
 
-const ADVANCED_TEMPLATE = `# Planbot Tickets
+export const ADVANCED_TEMPLATE = `# Planbot Tickets
 # Run \`planbot start --help\` for CLI options
 
 # =============================================================================
