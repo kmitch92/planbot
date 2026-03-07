@@ -7,6 +7,7 @@ import chalk from 'chalk';
 
 // Command imports
 import { createInitCommand } from './commands/init.js';
+import { createNewCommand } from './commands/new.js';
 import { createStartCommand } from './commands/start.js';
 import { createResumeCommand } from './commands/resume.js';
 import { createStatusCommand } from './commands/status.js';
@@ -58,6 +59,7 @@ program
 
 // Core workflow commands
 program.addCommand(createInitCommand());
+program.addCommand(createNewCommand());
 program.addCommand(createStartCommand());
 program.addCommand(createResumeCommand());
 program.addCommand(createStatusCommand());
