@@ -100,13 +100,21 @@ hooks:
 # =============================================================================
 #
 # Required fields: id, title, description
-# Optional fields: priority, planMode, acceptanceCriteria, dependencies, hooks, metadata, images
+# Optional fields: priority, planMode, acceptanceCriteria, dependencies, hooks,
+#                  metadata, images, loop
 #
 # planMode (default: true):
 #   true  — generate a plan, wait for approval, then execute
 #   false — skip planning and approval, execute directly from description
 #
 tickets:
+
+  # ---------------------------------------------------------------------------
+  # Basic Ticket — standard plan-and-execute workflow
+  # ---------------------------------------------------------------------------
+  # The simplest ticket type. Claude generates a plan, you approve it,
+  # then Claude executes the plan.
+  #
   - id: auth-001
     title: Implement User Authentication
     description: |
@@ -123,9 +131,13 @@ tickets:
       - Users can login and receive tokens
       - Protected routes reject invalid tokens
       - Refresh tokens work correctly
-    # images:
-    #   - .planbot/assets/auth-001/design-mockup.png
 
+  # ---------------------------------------------------------------------------
+  # Ticket with Dependencies — waits for other tickets to complete first
+  # ---------------------------------------------------------------------------
+  # Use dependencies when a ticket requires work from another ticket to be
+  # completed first. Planbot will automatically order execution.
+  #
   - id: auth-002
     title: Add Password Reset Flow
     description: |
@@ -144,17 +156,111 @@ tickets:
       - Reset tokens expire after 1 hour
       - Passwords are properly updated
 
+  # ---------------------------------------------------------------------------
+  # Direct Execution Ticket — skip planning, execute immediately
+  # ---------------------------------------------------------------------------
+  # Set planMode: false to skip plan generation and approval. Claude executes
+  # directly from the description. Use for well-defined, low-risk tasks.
+  #
   - id: feature-001
     title: Example Feature
     description: |
       Replace this with your actual feature description.
     priority: 1
     planMode: false                # Executes directly without plan generation
-    # images:                      # Attach with: planbot attach feature-001 screenshot.png
-    #   - .planbot/assets/feature-001/screenshot.png
     metadata:
       estimate: 4h
       assignee: claude
+
+  # ---------------------------------------------------------------------------
+  # Ticket with Images — attach screenshots, mockups, or diagrams
+  # ---------------------------------------------------------------------------
+  # Attach images to provide visual context. Use: planbot attach <id> <file>
+  # Images are copied to .planbot/assets/<ticket-id>/ and referenced here.
+  #
+  # - id: ui-redesign
+  #   title: Implement New Dashboard Design
+  #   description: |
+  #     Implement the new dashboard layout as shown in the attached mockup.
+  #     Match colors, spacing, and typography exactly.
+  #   images:
+  #     - .planbot/assets/ui-redesign/dashboard-mockup.png
+  #     - .planbot/assets/ui-redesign/color-palette.png
+  #   acceptanceCriteria:
+  #     - Layout matches mockup
+  #     - Responsive on mobile and desktop
+  #     - Accessibility audit passes
+
+  # ---------------------------------------------------------------------------
+  # Ticket with Custom Hooks — run commands at ticket lifecycle events
+  # ---------------------------------------------------------------------------
+  # Per-ticket hooks override global hooks. Useful for tickets that need
+  # special setup, teardown, or notifications.
+  #
+  # - id: deploy-staging
+  #   title: Deploy to staging
+  #   description: |
+  #     Deploy the application to staging environment.
+  #   hooks:
+  #     beforeEach:
+  #       - type: shell
+  #         command: npm run build
+  #     onComplete:
+  #       - type: shell
+  #         command: curl -X POST https://slack.webhook/notify -d '{"text":"Deployed to staging"}'
+
+  # ---------------------------------------------------------------------------
+  # Loop Ticket with Shell Condition — iterate until command succeeds
+  # ---------------------------------------------------------------------------
+  # Loop tickets execute repeatedly until either:
+  #   - The condition evaluates to true (shell exit 0, or prompt returns true)
+  #   - maxIterations is reached
+  #
+  # Shell conditions: command exit code 0 = success (stop looping)
+  #
+  # Loop hooks available:
+  #   onIterationStart    — runs at start of each iteration
+  #   onIterationComplete — runs after each iteration completes
+  #
+  # - id: coverage-boost
+  #   title: Achieve 90% test coverage
+  #   description: |
+  #     Iteratively improve test coverage until threshold is met.
+  #     Each iteration: identify gaps, write tests, verify improvement.
+  #   planMode: false
+  #   loop:
+  #     goal: "Reach 90% line coverage and 85% branch coverage"
+  #     condition:
+  #       type: shell
+  #       command: npm run test:coverage -- --json 2>/dev/null | jq -e '.total.lines.pct >= 90'
+  #     maxIterations: 15
+  #   hooks:
+  #     onIterationComplete:
+  #       - type: shell
+  #         command: npm run test:coverage -- --reporter=text-summary
+
+  # ---------------------------------------------------------------------------
+  # Loop Ticket with Prompt Condition — iterate until Claude confirms done
+  # ---------------------------------------------------------------------------
+  # Prompt conditions ask Claude to evaluate whether the goal is met.
+  # Claude analyzes the current state and returns true/false.
+  #
+  # Use prompt conditions when:
+  #   - Success criteria are subjective or complex
+  #   - No simple shell command can verify completion
+  #   - Human-like judgment is needed
+  #
+  # - id: fix-type-errors
+  #   title: Fix all TypeScript errors
+  #   description: |
+  #     Iteratively fix TypeScript compilation errors until clean build.
+  #   planMode: false
+  #   loop:
+  #     goal: "Zero TypeScript compilation errors"
+  #     condition:
+  #       type: prompt
+  #       command: "Are there zero TypeScript compilation errors in the build output?"
+  #     maxIterations: 20
 `;
 
 // =============================================================================
