@@ -64,36 +64,36 @@ export const ADVANCED_TEMPLATE = `# Planbot Tickets
 #   PLANBOT_QUESTION       — question text (onQuestion)
 #   PLANBOT_QUESTION_ID    — question ID (onQuestion)
 #
+config:
+  autoApprove: true
+  continueOnError: true
+  maxRetries: 3
+#  model: sonnet
+
 hooks:
   beforeAll:
-    - type: shell
-      command: echo "Starting planbot queue..."
+    - type: prompt
+      command: /clear
 
   afterAll:
-    - type: shell
-      command: echo "Queue processing complete"
+    - type: prompt
+      command: /schemacheck
+    - type: prompt
+      command: /typetest
+    - type: prompt
+      command: /commit
 
   beforeEach:
-    - type: shell
-      command: git status --short
+    - type: prompt
+      command: /clear
 
   afterEach:
-    - type: shell
-      command: echo "Ticket \${PLANBOT_TICKET_ID} finished with status \${PLANBOT_TICKET_STATUS}"
-
-  # onPlanGenerated:
-  #   - type: prompt
-  #     command: Review the generated plan and identify any risks or missing steps
-  #   - type: shell
-  #     command: cat "\${PLANBOT_PLAN_PATH}"
-
-  # onError:
-  #   - type: shell
-  #     command: echo "ERROR in \${PLANBOT_TICKET_ID}: \${PLANBOT_ERROR}"
-
-  # onComplete:
-  #   - type: shell
-  #     command: echo "\${PLANBOT_TICKET_ID} completed successfully"
+    - type: prompt
+      command: /schemacheck
+    - type: prompt
+      command: /workreport
+    - type: prompt
+      command: /commit
 
 # =============================================================================
 # Tickets
