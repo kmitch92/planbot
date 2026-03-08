@@ -484,6 +484,7 @@ function setupEventHandlers(
   orchestrator.on('ticket:completed', (ticket) => {
     stopProgressTracker();
     console.log(chalk.green.bold(`\n>>> Completed: ${ticket.title}`));
+    displayQueueSummary(orchestrator.getTickets());
   });
 
   orchestrator.on('ticket:failed', (ticket, error) => {
@@ -530,12 +531,12 @@ function setupEventHandlers(
   });
 }
 
-function displayQueueSummary(
-  tickets: Array<{ id: string; title: string; status: string; priority: number }>
+export function displayQueueSummary(
+  tickets: Array<{ id: string; title: string; status: string; priority: number; complete?: boolean }>
 ): void {
-  const pending = tickets.filter(t => t.status === 'pending');
-  const completed = tickets.filter(t => t.status === 'completed');
+  const completed = tickets.filter(t => t.status === 'completed' || t.complete === true);
   const failed = tickets.filter(t => t.status === 'failed');
+  const pending = tickets.filter(t => t.status === 'pending' && t.complete !== true);
 
   console.log(chalk.bold('Queue Summary:'));
   console.log(chalk.dim(`  Total tickets: ${tickets.length}`));
@@ -544,5 +545,4 @@ function displayQueueSummary(
   if (failed.length > 0) {
     console.log(chalk.red(`  Failed:        ${failed.length}`));
   }
-
 }
