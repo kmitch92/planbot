@@ -68,6 +68,7 @@ config:
   autoApprove: true
   continueOnError: true
   maxRetries: 3
+#  allowShellHooks: true   # Enable shell-type hooks (security: disabled by default)
 #  model: sonnet
 
 hooks:
