@@ -244,7 +244,8 @@ function buildEnvVars(
 function executeShellCommand(
   command: string,
   env: Record<string, string>,
-  timeoutMs: number = DEFAULT_TIMEOUT_MS
+  timeoutMs: number = DEFAULT_TIMEOUT_MS,
+  cwd?: string
 ): Promise<HookResult> {
   return new Promise((resolve) => {
     let stdout = "";
@@ -268,6 +269,7 @@ function executeShellCommand(
     try {
       childProcess = spawn("sh", ["-c", command], {
         env,
+        cwd,
         stdio: ["ignore", "pipe", "pipe"],
       });
 
@@ -345,10 +347,10 @@ function createHookExecutor(): HookExecutor {
           };
         }
 
-        logger.debug("Executing shell hook", { command: action.command });
+        logger.debug("Executing shell hook", { command: action.command, cwd: action.cwd });
 
         const env = buildEnvVars("hook", context);
-        const result = await executeShellCommand(action.command, env);
+        const result = await executeShellCommand(action.command, env, DEFAULT_TIMEOUT_MS, action.cwd);
 
         if (result.success) {
           logger.debug("Shell hook completed", { exitCode: result.exitCode });
