@@ -14,6 +14,9 @@ import { createMultiplexer, TimeoutError, createTelegramProvider } from '../../m
 import { createTerminalProvider } from '../../messaging/terminal.js';
 import { fileExists } from '../../utils/fs.js';
 import { logger } from '../../utils/logger.js';
+import { checkStalePid, writePidFile, removePidFile } from '../../utils/pid.js';
+import { getSessionLogReport, reportSessionLogSize } from '../../utils/session-report.js';
+import { getMemorySnapshot } from '../../utils/memory-monitor.js';
 
 // =============================================================================
 // Types
@@ -154,7 +157,7 @@ async function runContinuousLoop(
 // Graceful Shutdown Handler
 // =============================================================================
 
-function setupShutdownHandler(orchestrator: Orchestrator): void {
+function setupShutdownHandler(orchestrator: Orchestrator, pidPath: string): void {
   let shuttingDown = false;
 
   const shutdown = async (signal: string) => {
@@ -168,6 +171,7 @@ function setupShutdownHandler(orchestrator: Orchestrator): void {
 
     try {
       await orchestrator.stop();
+      removePidFile(pidPath);
       console.log(chalk.green('Stopped. Resume with: planbot resume'));
       process.exit(0);
     } catch (err) {
@@ -264,6 +268,18 @@ export function createStartCommand(): Command {
           await stateManager.init(cwd);
         }
 
+        // Enable file logging
+        logger.enableFileLogging(stateManager.getPaths(cwd).logs);
+
+        // PID file guard
+        const pidPath = stateManager.getPaths(cwd).pid;
+        const stalePid = checkStalePid(pidPath);
+        if (stalePid !== null) {
+          console.error(chalk.red(`Another planbot instance is running (PID ${stalePid}). Exiting.`));
+          process.exit(1);
+        }
+        writePidFile(pidPath);
+
         // Create terminal provider for approvals and questions
         const terminal = createTerminalProvider({
           showFullPlan: true,
@@ -316,9 +332,12 @@ export function createStartCommand(): Command {
         setupEventHandlers(orchestrator, spinner, options.dryRun ?? false);
 
         // Set up shutdown handler
-        setupShutdownHandler(orchestrator);
+        setupShutdownHandler(orchestrator, pidPath);
 
         spinner.succeed('Ready to process tickets');
+        const memSnap = getMemorySnapshot();
+        logger.info('Startup memory', { rssMb: memSnap.rssMb.toFixed(1), heapUsedMb: memSnap.heapUsedMb.toFixed(1) });
+        getSessionLogReport().then(r => reportSessionLogSize(r)).catch(() => {});
         console.log('');
 
         // Display queue summary
@@ -335,6 +354,7 @@ export function createStartCommand(): Command {
         // Start processing
         console.log(chalk.bold('\nStarting queue processing...\n'));
         await orchestrator.start();
+        removePidFile(pidPath);
 
         // Continuous mode loop
         if (options.continuous) {
