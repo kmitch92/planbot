@@ -658,6 +658,7 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
       let finalResult: ExecutionResult = { success: false };
       let timedOut = false;
       let lineBuffer = '';
+      let stderrOutput = '';
 
       const timer = setTimeout(() => {
         timedOut = true;
@@ -706,6 +707,7 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
 
       proc.stderr?.on('data', (chunk: Buffer) => {
         const text = chunk.toString();
+        stderrOutput += text;
         logger.debug('Claude stderr', { text: text.slice(0, 200) });
         logStream?.write(`[STDERR] ${text}`);
       });
@@ -745,7 +747,7 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
         if (code !== 0 && !finalResult.success) {
           resolve({
             success: false,
-            error: finalResult.error ?? `Claude exited with code ${code}`,
+            error: stderrOutput.trim() || finalResult.error || `Claude exited with code ${code}`,
             costUsd: finalResult.costUsd,
             sessionId: finalResult.sessionId,
           });
