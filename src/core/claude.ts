@@ -624,12 +624,12 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
         args.push('--model', model);
       }
 
-      if (sessionId) {
-        args.push('--session-id', sessionId);
-      }
-
       if (resume && sessionId) {
+        // Resuming an existing session
         args.push('--resume', sessionId);
+      } else if (sessionId) {
+        // Creating/tracking a new session
+        args.push('--session-id', sessionId);
       }
 
       if (skipPermissions) {
