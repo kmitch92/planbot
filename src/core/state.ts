@@ -36,6 +36,10 @@ export interface PlanbotPaths {
   sessions: string;
   /** .planbot/assets/ */
   assets: string;
+  /** .planbot/logs/ */
+  logs: string;
+  /** .planbot/planbot.pid */
+  pid: string;
 }
 
 /**
@@ -50,6 +54,8 @@ function getPaths(projectRoot: string): PlanbotPaths {
     questions: join(root, 'questions'),
     sessions: join(root, 'sessions'),
     assets: join(root, 'assets'),
+    logs: join(root, 'logs'),
+    pid: join(root, 'planbot.pid'),
   };
 }
 
@@ -139,6 +145,7 @@ function createStateManager(): StateManager {
       await ensureDir(paths.questions);
       await ensureDir(paths.sessions);
       await ensureDir(paths.assets);
+      await ensureDir(paths.logs);
 
       // Create default state if it doesn't exist
       if (!(await fileExists(paths.state))) {
