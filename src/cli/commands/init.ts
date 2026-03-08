@@ -70,6 +70,45 @@ config:
   maxRetries: 3
 #  allowShellHooks: true   # Enable shell-type hooks (security: disabled by default)
 #  model: sonnet
+#  fallbackModel: sonnet           # Model to use when rate limited (default: sonnet)
+#  maxBudgetPerTicket: 10          # Maximum $ per ticket (default: 10)
+#  maxPlanRevisions: 3             # Plan revision attempts after rejection (default: 3)
+#  planMode: true                  # Generate plans before execution (default: true)
+#
+#  # --- Timeouts (in milliseconds) ---
+#  timeouts:
+#    planGeneration: 900000        # 15 minutes (default)
+#    execution: 1800000            # 30 minutes (default)
+#    approval: 86400000            # 24 hours (default)
+#    question: 3600000             # 1 hour (default)
+#
+#  # --- Messaging Providers (pick one) ---
+#  # Telegram:
+#  messaging:
+#    provider: telegram
+#    botToken: \${TELEGRAM_BOT_TOKEN}
+#    chatId: \${TELEGRAM_CHAT_ID}
+#
+#  # Slack:
+#  # messaging:
+#  #   provider: slack
+#  #   botToken: \${SLACK_BOT_TOKEN}
+#  #   appToken: \${SLACK_APP_TOKEN}
+#  #   channel: "#planbot"
+#
+#  # Discord:
+#  # messaging:
+#  #   provider: discord
+#  #   botToken: \${DISCORD_BOT_TOKEN}
+#  #   channelId: "123456789"
+#
+#  # --- Webhook Server (for external integrations) ---
+#  webhook:
+#    enabled: true
+#    port: 3847
+#    path: /planbot/webhook
+#    secret: \${WEBHOOK_SECRET}     # Optional HMAC secret
+#    cors: false
 
 hooks:
   beforeAll:
@@ -240,6 +279,7 @@ tickets:
   #     condition:
   #       type: shell
   #       command: npm run test:coverage -- --json 2>/dev/null | jq -e '.total.lines.pct >= 90'
+  #       cwd: packages/core          # Run condition from specific directory (optional)
   #     maxIterations: 15
   #   hooks:
   #     onIterationComplete:
