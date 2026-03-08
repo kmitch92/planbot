@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { spawn, type ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { Writable, Readable } from "node:stream";
-import { claude, type StreamEvent, type ExecutionCallbacks } from "../claude.js";
+import { claude, type StreamEvent, type ExecutionCallbacks, appendBounded, MAX_STDERR_CHARS } from "../claude.js";
 
 // =============================================================================
 // Mocks
@@ -930,5 +930,43 @@ describe("Claude Wrapper - runPrompt", () => {
     expect(result.success).toBe(false);
     expect(result.error).toBeDefined();
     expect(result.error).toContain("claude");
+  });
+});
+
+// =============================================================================
+// Bounded Stderr Buffer Tests
+// =============================================================================
+
+describe("appendBounded", () => {
+  it("returns full string when under limit", () => {
+    const result = appendBounded("hello", " world", 20);
+    expect(result).toBe("hello world");
+  });
+
+  it("truncates from head when over limit", () => {
+    const result = appendBounded("abcdef", "ghij", 8);
+    expect(result).toBe("cdefghij");
+    expect(result.length).toBe(8);
+    expect(result.endsWith("ghij")).toBe(true);
+  });
+
+  it("preserves tail content when truncating", () => {
+    const existing = "old-content-that-should-be-dropped";
+    const recent = "RECENT_DATA";
+    const result = appendBounded(existing, recent, 15);
+    expect(result).toContain("RECENT_DATA");
+    expect(result.length).toBe(15);
+  });
+
+  it("handles exact limit boundary", () => {
+    const result = appendBounded("abc", "de", 5);
+    expect(result).toBe("abcde");
+    expect(result.length).toBe(5);
+  });
+});
+
+describe("MAX_STDERR_CHARS", () => {
+  it("is 50000", () => {
+    expect(MAX_STDERR_CHARS).toBe(50_000);
   });
 });

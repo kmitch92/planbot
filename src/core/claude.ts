@@ -6,6 +6,21 @@ import { logger } from '../utils/logger.js';
 import type { Model } from './schemas.js';
 
 // =============================================================================
+// Constants
+// =============================================================================
+
+export const MAX_STDERR_CHARS = 50_000;
+
+/**
+ * Append `text` to `existing`, keeping only the last `maxLen` characters.
+ */
+export function appendBounded(existing: string, text: string, maxLen: number): string {
+  const combined = existing + text;
+  if (combined.length <= maxLen) return combined;
+  return combined.slice(combined.length - maxLen);
+}
+
+// =============================================================================
 // Types and Interfaces
 // =============================================================================
 
@@ -223,7 +238,7 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
       proc.stderr?.on('data', (chunk: Buffer) => {
         const text = chunk.toString();
         logStream?.write(`[STDERR] ${text}`);
-        stderrOutput += text;
+        stderrOutput = appendBounded(stderrOutput, text, MAX_STDERR_CHARS);
         onOutput?.(text);
         logger.warn('Claude stderr', { text: text.trim().slice(0, 500) });
       });
@@ -513,7 +528,7 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
       proc.stderr?.on('data', (chunk: Buffer) => {
         const text = chunk.toString();
         logStream?.write(`[STDERR] ${text}`);
-        stderrOutput += text;
+        stderrOutput = appendBounded(stderrOutput, text, MAX_STDERR_CHARS);
         logger.warn('Claude stderr (runPrompt)', { text: text.trim().slice(0, 500) });
       });
 
@@ -707,7 +722,7 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
 
       proc.stderr?.on('data', (chunk: Buffer) => {
         const text = chunk.toString();
-        stderrOutput += text;
+        stderrOutput = appendBounded(stderrOutput, text, MAX_STDERR_CHARS);
         logger.debug('Claude stderr', { text: text.slice(0, 200) });
         logStream?.write(`[STDERR] ${text}`);
       });
