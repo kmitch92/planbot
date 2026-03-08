@@ -1,6 +1,7 @@
 import { EventEmitter } from "node:events";
 import { randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import { parse as parseYaml } from "yaml";
 
 import {
@@ -423,6 +424,11 @@ class OrchestratorImpl
     config: Config,
     hooks?: Hooks
   ): Promise<void> {
+    // Resolve ticket working directory
+    const ticketCwd = ticket.cwd
+      ? resolve(this.projectRoot, ticket.cwd)
+      : this.projectRoot;
+
     const plan = await stateManager.loadPlan(this.projectRoot, ticket.id);
 
     if (!plan) {
@@ -433,7 +439,7 @@ class OrchestratorImpl
     const result = await this.waitForApproval(ticket, plan, config);
 
     if (result.approved) {
-      await this.executeTicket(ticket, plan, config, hooks);
+      await this.executeTicket(ticket, plan, config, hooks, [], [], ticketCwd);
     } else if (result.rejectionReason && config.maxPlanRevisions > 0) {
       // Rejection with feedback — enter revision loop
       await this.processTicket(ticket, config, hooks, result.rejectionReason);
@@ -454,6 +460,11 @@ class OrchestratorImpl
     config: Config,
     hooks?: Hooks
   ): Promise<void> {
+    // Resolve ticket working directory
+    const ticketCwd = ticket.cwd
+      ? resolve(this.projectRoot, ticket.cwd)
+      : this.projectRoot;
+
     const sessionId = await stateManager.loadSession(
       this.projectRoot,
       ticket.id
@@ -464,7 +475,7 @@ class OrchestratorImpl
     if (currentState.loopState && ticket.loop) {
       const plan = await stateManager.loadPlan(this.projectRoot, ticket.id);
       if (plan) {
-        await this.executeLoopTicket(ticket, plan, config, hooks);
+        await this.executeLoopTicket(ticket, plan, config, hooks, [], [], ticketCwd);
         return;
       }
     }
@@ -473,7 +484,7 @@ class OrchestratorImpl
       logger.warn("No saved session found, re-executing");
       const plan = await stateManager.loadPlan(this.projectRoot, ticket.id);
       if (plan) {
-        await this.executeTicket(ticket, plan, config, hooks);
+        await this.executeTicket(ticket, plan, config, hooks, [], [], ticketCwd);
       } else {
         await this.processTicket(ticket, config, hooks);
       }
@@ -482,7 +493,7 @@ class OrchestratorImpl
 
     logger.info("Resuming Claude session", { ticketId: ticket.id, sessionId });
 
-    await this.executeWithSession(ticket, sessionId, config, hooks);
+    await this.executeWithSession(ticket, sessionId, config, hooks, undefined, ticketCwd);
   }
 
   // ===========================================================================
@@ -499,6 +510,11 @@ class OrchestratorImpl
     logger.info("Processing ticket", { title: ticket.title });
 
     const mergedHooks = hookExecutor.mergeHooks(globalHooks, ticket.hooks);
+
+    // Resolve ticket working directory (relative to project root or absolute)
+    const ticketCwd = ticket.cwd
+      ? resolve(this.projectRoot, ticket.cwd)
+      : this.projectRoot;
 
     // Resolve images once for all prompt builders
     const { resolved: resolvedImagePaths, warnings: imageWarnings } = ticket.images?.length
@@ -518,6 +534,7 @@ class OrchestratorImpl
       ticketId: ticket.id,
       ticketTitle: ticket.title,
       ticketStatus: ticket.status,
+      cwd: ticketCwd,
     });
 
     // Resolve effective plan mode (ticket override > global config)
@@ -534,7 +551,7 @@ class OrchestratorImpl
         ticket.status = "planning";
         await this.saveTicketsFile();
 
-        const plan = await this.generatePlan(ticket, config, feedback, resolvedImagePaths, imageWarnings);
+        const plan = await this.generatePlan(ticket, config, ticketCwd, feedback, resolvedImagePaths, imageWarnings);
 
         // Save plan
         const planPath = await stateManager.savePlan(this.projectRoot, ticket.id, plan);
@@ -545,6 +562,7 @@ class OrchestratorImpl
           ticketTitle: ticket.title,
           plan,
           planPath,
+          cwd: ticketCwd,
         });
 
         this.emit("ticket:plan-generated", ticket, plan);
@@ -563,6 +581,7 @@ class OrchestratorImpl
           plan,
           approved: result.approved,
           rejectionReason: result.rejectionReason,
+          cwd: ticketCwd,
         });
 
         if (result.approved) {
@@ -577,9 +596,9 @@ class OrchestratorImpl
 
           // Phase: Executing
           if (ticket.loop) {
-            await this.executeLoopTicket(ticket, plan, config, mergedHooks, resolvedImagePaths, imageWarnings);
+            await this.executeLoopTicket(ticket, plan, config, mergedHooks, resolvedImagePaths, imageWarnings, ticketCwd);
           } else {
-            await this.executeTicket(ticket, plan, config, mergedHooks, resolvedImagePaths, imageWarnings);
+            await this.executeTicket(ticket, plan, config, mergedHooks, resolvedImagePaths, imageWarnings, ticketCwd);
           }
           break;
         }
@@ -608,6 +627,7 @@ class OrchestratorImpl
           ticketId: ticket.id,
           ticketTitle: ticket.title,
           ticketStatus: "skipped",
+          cwd: ticketCwd,
         });
         this.emit("ticket:skipped", ticket);
         this.multiplexer.broadcastStatus({
@@ -624,9 +644,9 @@ class OrchestratorImpl
 
       const directPrompt = this.buildDirectExecutionPrompt(ticket, resolvedImagePaths, imageWarnings);
       if (ticket.loop) {
-        await this.executeLoopTicket(ticket, directPrompt, config, mergedHooks, resolvedImagePaths, imageWarnings);
+        await this.executeLoopTicket(ticket, directPrompt, config, mergedHooks, resolvedImagePaths, imageWarnings, ticketCwd);
       } else {
-        await this.executeTicket(ticket, directPrompt, config, mergedHooks, resolvedImagePaths, imageWarnings);
+        await this.executeTicket(ticket, directPrompt, config, mergedHooks, resolvedImagePaths, imageWarnings, ticketCwd);
       }
     }
 
@@ -635,12 +655,13 @@ class OrchestratorImpl
       ticketId: ticket.id,
       ticketTitle: ticket.title,
       ticketStatus: ticket.status,
+      cwd: ticketCwd,
     });
 
     logger.clearContext();
   }
 
-  private async generatePlan(ticket: Ticket, config: Config, feedback?: string, resolvedImagePaths: string[] = [], imageWarnings: string[] = []): Promise<string> {
+  private async generatePlan(ticket: Ticket, config: Config, ticketCwd: string, feedback?: string, resolvedImagePaths: string[] = [], imageWarnings: string[] = []): Promise<string> {
     logger.info("Generating plan");
 
     const prompt = this.buildPlanPrompt(ticket, feedback, resolvedImagePaths, imageWarnings);
@@ -658,7 +679,7 @@ class OrchestratorImpl
     let result = await claude.generatePlan(prompt, {
       model: currentModel,
       timeout: config.timeouts.planGeneration,
-      cwd: this.projectRoot,
+      cwd: ticketCwd,
       verbose: this.verbose,
     }, (text) => this.handleOutput(ticket, text));
 
@@ -679,7 +700,7 @@ class OrchestratorImpl
       result = await claude.generatePlan(prompt, {
         model: fallbackModel,
         timeout: config.timeouts.planGeneration,
-        cwd: this.projectRoot,
+        cwd: ticketCwd,
         verbose: this.verbose,
       }, (text) => this.handleOutput(ticket, text));
     }
@@ -748,7 +769,10 @@ class OrchestratorImpl
     hooks?: Hooks,
     resolvedImagePaths: string[] = [],
     imageWarnings: string[] = [],
+    ticketCwd?: string,
   ): Promise<void> {
+    // Use provided ticketCwd or fall back to projectRoot
+    const effectiveCwd = ticketCwd ?? this.projectRoot;
     await this.updateState({ currentPhase: "executing" });
     ticket.status = "executing";
     await this.saveTicketsFile();
@@ -783,7 +807,7 @@ class OrchestratorImpl
             model: config.model,
             skipPermissions: isAutonomous || config.skipPermissions,
             timeout: config.timeouts.execution,
-            cwd: this.projectRoot,
+            cwd: effectiveCwd,
             verbose: this.verbose,
           },
           {
@@ -811,7 +835,7 @@ class OrchestratorImpl
               model: config.fallbackModel,
               skipPermissions: isAutonomous || config.skipPermissions,
               timeout: config.timeouts.execution,
-              cwd: this.projectRoot,
+              cwd: effectiveCwd,
               verbose: this.verbose,
             },
             {
@@ -835,6 +859,7 @@ class OrchestratorImpl
               await this.executeHooks(hooks, "onComplete", {
                 ticketId: ticket.id,
                 ticketTitle: ticket.title,
+                cwd: effectiveCwd,
               });
               this.emit("ticket:completed", ticket);
               this.multiplexer.broadcastStatus({
@@ -863,6 +888,7 @@ class OrchestratorImpl
             await this.executeHooks(hooks, "onComplete", {
               ticketId: ticket.id,
               ticketTitle: ticket.title,
+              cwd: effectiveCwd,
             });
             this.emit("ticket:completed", ticket);
             this.multiplexer.broadcastStatus({
@@ -886,6 +912,7 @@ class OrchestratorImpl
             ticketId: ticket.id,
             ticketTitle: ticket.title,
             error: error.message,
+            cwd: effectiveCwd,
           });
           throw error;
         }
@@ -904,8 +931,11 @@ class OrchestratorImpl
     sessionId: string,
     config: Config,
     hooks?: Hooks,
-    resumePrompt?: string
+    resumePrompt?: string,
+    ticketCwd?: string,
   ): Promise<void> {
+    // Use provided ticketCwd or fall back to projectRoot
+    const effectiveCwd = ticketCwd ?? this.projectRoot;
     const isAutonomous = (ticket.planMode ?? config.planMode) === false || config.autoApprove;
     const currentModel = config.model;
     const fallbackModel = config.fallbackModel;
@@ -917,7 +947,7 @@ class OrchestratorImpl
         model: currentModel,
         skipPermissions: isAutonomous || config.skipPermissions,
         timeout: config.timeouts.execution,
-        cwd: this.projectRoot,
+        cwd: effectiveCwd,
         verbose: this.verbose,
       },
       {
@@ -946,7 +976,7 @@ class OrchestratorImpl
           model: fallbackModel,
           skipPermissions: isAutonomous || config.skipPermissions,
           timeout: config.timeouts.execution,
-          cwd: this.projectRoot,
+          cwd: effectiveCwd,
           verbose: this.verbose,
         },
         {
@@ -965,6 +995,7 @@ class OrchestratorImpl
         await this.executeHooks(hooks, "onComplete", {
           ticketId: ticket.id,
           ticketTitle: ticket.title,
+          cwd: effectiveCwd,
         });
         this.emit("ticket:completed", ticket);
         this.multiplexer.broadcastStatus({
@@ -985,7 +1016,10 @@ class OrchestratorImpl
     hooks?: Hooks,
     resolvedImagePaths: string[] = [],
     imageWarnings: string[] = [],
+    ticketCwd?: string,
   ): Promise<void> {
+    // Use provided ticketCwd or fall back to projectRoot
+    const effectiveCwd = ticketCwd ?? this.projectRoot;
     const loop = ticket.loop!;
     const maxIterations = loop.maxIterations;
 
@@ -1025,13 +1059,14 @@ class OrchestratorImpl
           ticketTitle: ticket.title,
           iteration: i,
           maxIterations,
+          cwd: effectiveCwd,
         });
 
         logger.info("Starting loop iteration", { ticketId: ticket.id, iteration: i, maxIterations });
 
         if (i === 0) {
           // First iteration: use executeTicket to create a new session
-          await this.executeTicket(ticket, plan, config, hooks, resolvedImagePaths, imageWarnings);
+          await this.executeTicket(ticket, plan, config, hooks, resolvedImagePaths, imageWarnings, effectiveCwd);
         } else {
           // Subsequent iterations: resume existing session with iteration prompt
           const sessionId = await stateManager.loadSession(this.projectRoot, ticket.id);
@@ -1040,7 +1075,7 @@ class OrchestratorImpl
           }
 
           const iterationPrompt = this.buildIterationPrompt(ticket, i, maxIterations);
-          await this.executeWithSession(ticket, sessionId, config, hooks, iterationPrompt);
+          await this.executeWithSession(ticket, sessionId, config, hooks, iterationPrompt, effectiveCwd);
         }
 
         // Evaluate condition after each iteration
@@ -1049,7 +1084,7 @@ class OrchestratorImpl
           const claudeRunner = async (prompt: string) => {
             const result = await claude.runPrompt(prompt, {
               model: config.model,
-              cwd: this.projectRoot,
+              cwd: effectiveCwd,
               timeout: 300000,
               verbose: this.verbose,
             });
@@ -1062,7 +1097,7 @@ class OrchestratorImpl
             {
               allowShellHooks: config.allowShellHooks,
               claudeRunner,
-              cwd: this.projectRoot,
+              cwd: effectiveCwd,
               timeout: config.timeouts.execution,
             }
           );
@@ -1085,6 +1120,7 @@ class OrchestratorImpl
           iteration: i,
           maxIterations,
           conditionMet: conditionResult.met,
+          cwd: effectiveCwd,
         });
 
         if (conditionResult.met) {
@@ -1110,6 +1146,7 @@ class OrchestratorImpl
     await this.executeHooks(hooks, "onComplete", {
       ticketId: ticket.id,
       ticketTitle: ticket.title,
+      cwd: effectiveCwd,
     });
     this.emit("ticket:completed", ticket);
     this.multiplexer.broadcastStatus({
