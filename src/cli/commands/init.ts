@@ -96,13 +96,19 @@ hooks:
     - type: prompt
       command: /commit
 
+#  # --- Hook with working directory (run in specific service dir) ---
+#  afterEach:
+#    - type: shell
+#      command: npm run lint
+#      cwd: services/auth-service      # Run lint in specific service dir
+
 # =============================================================================
 # Tickets
 # =============================================================================
 #
 # Required fields: id, title, description
 # Optional fields: priority, planMode, acceptanceCriteria, dependencies, hooks,
-#                  metadata, images, loop
+#                  metadata, images, loop, cwd
 #
 # planMode (default: true):
 #   true  — generate a plan, wait for approval, then execute
@@ -262,6 +268,23 @@ tickets:
   #       type: prompt
   #       command: "Are there zero TypeScript compilation errors in the build output?"
   #     maxIterations: 20
+
+  # ---------------------------------------------------------------------------
+  # Ticket with Working Directory — execute from a specific path (monorepo)
+  # ---------------------------------------------------------------------------
+  # Use cwd to run a ticket from a specific directory. Useful for monorepos
+  # where different services have their own package.json and test setups.
+  #
+  # - id: auth-service-coverage
+  #   title: Improve auth-service test coverage
+  #   cwd: services/auth-service        # Execute from this directory
+  #   description: |
+  #     Increase test coverage in the auth service to 80%.
+  #   loop:
+  #     goal: Achieve 80% test coverage
+  #     condition:
+  #       type: shell
+  #       command: npm run test:coverage -- --passWithNoTests
 `;
 
 // =============================================================================
