@@ -96,6 +96,10 @@ export const TimeoutsSchema = z.object({
 export const ShellHookActionSchema = z.object({
   type: z.literal("shell"),
   command: z.string().min(1).max(10000),
+  /** Working directory for this hook, relative to project root or ticket cwd */
+  cwd: z.string().min(1).max(500)
+    .refine(val => !val.includes('..'), { message: 'Path must not contain ..' })
+    .optional(),
 });
 
 export const PromptHookActionSchema = z.object({
@@ -142,6 +146,10 @@ export const HooksSchema = z.object({
 export const ShellConditionSchema = z.object({
   type: z.literal("shell"),
   command: z.string().min(1).max(10000),
+  /** Working directory for condition check, relative to project root or ticket cwd */
+  cwd: z.string().min(1).max(500)
+    .refine(val => !val.includes('..'), { message: 'Path must not contain ..' })
+    .optional(),
 });
 
 export const PromptConditionSchema = z.object({
@@ -253,6 +261,10 @@ export const TicketSchema = z.object({
   images: z.array(ImagePathSchema).max(MAX_IMAGES_PER_TICKET).optional(),
   /** Override global planMode for this ticket. When false, skips plan generation and executes directly. */
   planMode: z.boolean().optional(),
+  /** Working directory for ticket execution, relative to project root */
+  cwd: z.string().min(1).max(500)
+    .refine(val => !val.includes('..'), { message: 'Path must not contain ..' })
+    .optional(),
   /** Loop configuration for iterative execution */
   loop: LoopConfigSchema.optional(),
   /** Whether the ticket has been completed (persisted to YAML for restart resilience) */
