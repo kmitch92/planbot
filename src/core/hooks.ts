@@ -350,7 +350,7 @@ function createHookExecutor(): HookExecutor {
         logger.debug("Executing shell hook", { command: action.command, cwd: action.cwd });
 
         const env = buildEnvVars("hook", context);
-        const result = await executeShellCommand(action.command, env, DEFAULT_TIMEOUT_MS, action.cwd);
+        const result = await executeShellCommand(action.command, env, DEFAULT_TIMEOUT_MS, action.cwd ?? (typeof context.cwd === 'string' ? context.cwd : undefined));
 
         if (result.success) {
           logger.debug("Shell hook completed", { exitCode: result.exitCode });

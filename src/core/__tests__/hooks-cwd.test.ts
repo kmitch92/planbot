@@ -80,6 +80,18 @@ describe("Shell hook cwd execution", () => {
     expect(result.output?.trim()).toBe("found");
   });
 
+  it("falls back to context.cwd when action has no cwd", async () => {
+    const action = createShellAction("pwd");
+    const context = createContext({ cwd: tempDir });
+
+    const result = await hookExecutor.executeAction(action, context, {
+      allowShellHooks: true,
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.output?.trim()).toBe(tempDir);
+  });
+
   it("uses process cwd when no cwd specified", async () => {
     const action = createShellAction("pwd");
     const context = createContext();
