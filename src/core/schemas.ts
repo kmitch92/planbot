@@ -207,6 +207,10 @@ export const ConfigSchema = z.object({
   webhook: WebhookConfigSchema.default({}),
   /** Timeout configurations */
   timeouts: TimeoutsSchema.default({}),
+  /** Memory ceiling in MB. When RSS exceeds this, queue pauses. 0 = disabled (default). */
+  memoryCeilingMb: z.number().int().nonnegative().default(0),
+  /** How often to check memory in seconds (default: 30) */
+  memoryCheckIntervalSec: z.number().int().positive().default(30),
 });
 
 // =============================================================================

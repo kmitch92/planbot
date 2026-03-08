@@ -25,6 +25,7 @@ import type { Multiplexer } from "../messaging/multiplexer.js";
 import { logger } from "../utils/logger.js";
 import { isRateLimitError, shouldFallback } from "./rate-limit-detection.js";
 import { evaluateCondition, type ConditionResult } from "./loop-condition.js";
+import { createMemoryMonitor, getMemorySnapshot, type MemoryMonitor } from "../utils/memory-monitor.js";
 
 // =============================================================================
 // Types and Interfaces
@@ -115,6 +116,7 @@ class OrchestratorImpl
   private dynamicTickets: Ticket[] = [];
   private suppressCompletion = false;
 
+  private memoryMonitor: MemoryMonitor | null = null;
   private pendingApprovals = new Map<string, PendingApprovalResolvers>();
   private pendingQuestionAnswers = new Map<string, PendingQuestionResolvers>();
 
@@ -149,6 +151,21 @@ class OrchestratorImpl
       this.running = true;
       this.pauseRequested = false;
       this.stopRequested = false;
+
+      if (this.ticketsFile!.config.memoryCeilingMb > 0) {
+        this.memoryMonitor = createMemoryMonitor();
+        this.memoryMonitor.start(
+          this.ticketsFile!.config.memoryCheckIntervalSec,
+          this.ticketsFile!.config.memoryCeilingMb,
+          (snapshot) => {
+            logger.warn('Memory ceiling hit, requesting pause', {
+              rssMb: snapshot.rssMb.toFixed(1),
+              ceilingMb: this.ticketsFile!.config.memoryCeilingMb,
+            });
+            this.pauseRequested = true;
+          }
+        );
+      }
 
       this.emit("queue:start");
       await this.runQueue();
@@ -207,6 +224,7 @@ class OrchestratorImpl
     }
 
     logger.info("Stop requested");
+    this.memoryMonitor?.stop();
     this.stopRequested = true;
     this.pauseRequested = true;
 
@@ -327,6 +345,11 @@ class OrchestratorImpl
     for (const ticket of this.getProcessableTickets(tickets)) {
       if (this.pauseRequested || this.stopRequested) {
         logger.info("Processing paused/stopped");
+        break;
+      }
+
+      if (this.memoryMonitor?.isAboveCeiling()) {
+        logger.warn('Memory above ceiling before processing next ticket, pausing queue');
         break;
       }
 
