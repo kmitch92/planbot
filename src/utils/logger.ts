@@ -1,4 +1,6 @@
 import chalk from 'chalk';
+import { createWriteStream, mkdirSync, type WriteStream } from 'node:fs';
+import { join } from 'node:path';
 
 /**
  * Mask sensitive tokens in strings to prevent accidental logging.
@@ -66,6 +68,14 @@ function getLogLevel(): LogLevel {
 }
 
 /**
+ * Whether PLANBOT_LOG_LEVEL was explicitly set in environment
+ */
+function isLogLevelExplicit(): boolean {
+  const envLevel = process.env.PLANBOT_LOG_LEVEL?.toLowerCase();
+  return !!(envLevel && envLevel in LOG_LEVELS);
+}
+
+/**
  * Formats a timestamp for log output
  */
 function formatTimestamp(): string {
@@ -123,9 +133,13 @@ const levelLabels: Record<LogLevel, string> = {
 class Logger {
   private context: LogContext = {};
   private minLevel: LogLevel;
+  private fileMinLevel: LogLevel;
+  private fileStream: WriteStream | null = null;
+  private logDir: string | null = null;
 
   constructor() {
     this.minLevel = getLogLevel();
+    this.fileMinLevel = isLogLevelExplicit() ? this.minLevel : 'debug';
   }
 
   /**
@@ -150,6 +164,65 @@ class Logger {
   }
 
   /**
+   * Enable file logging to the given directory
+   */
+  enableFileLogging(logDir: string): void {
+    mkdirSync(logDir, { recursive: true });
+    const filename = `planbot-${new Date().toISOString().slice(0, 10)}.log`;
+    this.fileStream = createWriteStream(join(logDir, filename), { flags: 'a' });
+    this.logDir = logDir;
+  }
+
+  /**
+   * Disable file logging and close the stream
+   */
+  disableFileLogging(): Promise<void> {
+    return new Promise((resolve) => {
+      if (this.fileStream) {
+        const stream = this.fileStream;
+        this.fileStream = null;
+        this.logDir = null;
+        stream.end(() => resolve());
+      } else {
+        this.logDir = null;
+        resolve();
+      }
+    });
+  }
+
+  /**
+   * Write a log entry to the file stream as JSON
+   */
+  private writeToFile(level: string, message: string, meta?: LogMeta): void {
+    if (!this.fileStream) return;
+
+    // Check file-specific minimum level (skip for audit which always logs)
+    if (level !== 'audit' && level in LOG_LEVELS) {
+      const numericLevel = LOG_LEVELS[level as LogLevel];
+      if (numericLevel < LOG_LEVELS[this.fileMinLevel]) return;
+    }
+
+    // Strip ANSI codes
+    const cleanMessage = message.replace(/\u001b\[[0-9;]*m/g, '');
+
+    const entry: Record<string, unknown> = {
+      timestamp: new Date().toISOString(),
+      level,
+      message: cleanMessage,
+    };
+
+    if (this.context && Object.keys(this.context).length > 0) {
+      entry.context = { ...this.context };
+    }
+
+    if (meta) {
+      entry.meta = meta;
+    }
+
+    this.fileStream.write(JSON.stringify(entry) + '\n');
+  }
+
+  /**
    * Check if a log level should be output
    */
   private shouldLog(level: LogLevel): boolean {
@@ -160,6 +233,8 @@ class Logger {
    * Core logging method
    */
   private log(level: LogLevel, message: string, meta?: LogMeta): void {
+    this.writeToFile(level, message, meta);
+
     if (!this.shouldLog(level)) {
       return;
     }
@@ -216,6 +291,7 @@ class Logger {
     const contextStr = formatContext(this.context, meta);
     const output = `${timestamp} ${securityLabel} ${message}${contextStr}`;
     console.warn(output);
+    this.writeToFile('audit', message, meta);
   }
 }
 
