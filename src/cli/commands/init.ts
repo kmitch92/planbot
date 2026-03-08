@@ -75,6 +75,10 @@ config:
 #  maxPlanRevisions: 3             # Plan revision attempts after rejection (default: 3)
 #  planMode: true                  # Generate plans before execution (default: true)
 #
+#  # --- Resource Limits ---
+#  memoryCeilingMb: 1024             # Pause queue when RSS exceeds this (MB). 0 = disabled (default: 1024)
+#  memoryCheckIntervalSec: 30        # How often to check memory in seconds (default: 30)
+#
 #  # --- Timeouts (in milliseconds) ---
 #  timeouts:
 #    planGeneration: 900000        # 15 minutes (default)
