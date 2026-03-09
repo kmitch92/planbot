@@ -79,6 +79,12 @@ config:
 #  memoryCeilingMb: 1024             # Pause queue when RSS exceeds this (MB). 0 = disabled (default: 1024)
 #  memoryCheckIntervalSec: 30        # How often to check memory in seconds (default: 30)
 #
+#  # --- Session Log Cleanup ---
+#  sessionCleanup:
+#    enabled: true                   # Auto-clean ~/.claude/projects/ between iterations (default: false)
+#    maxSizeMb: 200                  # Delete oldest files when total exceeds this (default: 200)
+#    maxAgeDays: 7                   # Delete files older than this many days (default: 7)
+#
 #  # --- Timeouts (in milliseconds) ---
 #  timeouts:
 #    planGeneration: 900000        # 15 minutes (default)
