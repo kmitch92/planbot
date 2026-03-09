@@ -23,6 +23,7 @@ import { claude } from "./claude.js";
 import { hookExecutor, type HookContext } from "./hooks.js";
 import type { Multiplexer } from "../messaging/multiplexer.js";
 import { logger } from "../utils/logger.js";
+import { cleanupSessionLogs } from "../utils/session-report.js";
 import { isRateLimitError, shouldFallback } from "./rate-limit-detection.js";
 import { evaluateCondition, type ConditionResult } from "./loop-condition.js";
 import { createMemoryMonitor, getMemorySnapshot, type MemoryMonitor } from "../utils/memory-monitor.js";
@@ -1085,6 +1086,26 @@ class OrchestratorImpl
           cwd: effectiveCwd,
         });
 
+        // Clean session logs between iterations if configured
+        if (config.sessionCleanup.enabled) {
+          try {
+            const result = await cleanupSessionLogs({
+              maxSizeMb: config.sessionCleanup.maxSizeMb,
+              maxAgeDays: config.sessionCleanup.maxAgeDays,
+            });
+            if (result.deletedFiles > 0) {
+              logger.info("Session logs cleaned", {
+                deletedFiles: result.deletedFiles,
+                freedMb: result.freedMb,
+              });
+            }
+          } catch (err) {
+            logger.warn("Session cleanup failed", {
+              error: err instanceof Error ? err.message : String(err),
+            });
+          }
+        }
+
         logger.info("Starting loop iteration", { ticketId: ticket.id, iteration: i, maxIterations });
 
         if (i === 0) {
@@ -1209,7 +1230,10 @@ class OrchestratorImpl
   // ===========================================================================
 
   private handleClaudeEvent(ticket: Ticket, event: { type: string; message?: string; toolName?: string }): void {
-    logger.debug("Claude event", { type: event.type });
+    // Only log actionable events to reduce noise (assistant/user/system events are ~95% of volume)
+    if (event.type === 'tool_use' || event.type === 'tool_result' || event.type === 'error' || event.type === 'result') {
+      logger.debug("Claude event", { type: event.type, toolName: event.toolName });
+    }
     const eventLine = `[${event.type}] ${event.message ?? ""}`;
     this.emit("ticket:output", ticket, eventLine);
     this.emit("ticket:event", ticket, { type: event.type, toolName: event.toolName, message: event.message });

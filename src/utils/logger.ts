@@ -139,7 +139,7 @@ class Logger {
 
   constructor() {
     this.minLevel = getLogLevel();
-    this.fileMinLevel = isLogLevelExplicit() ? this.minLevel : 'debug';
+    this.fileMinLevel = isLogLevelExplicit() ? this.minLevel : 'info';
   }
 
   /**

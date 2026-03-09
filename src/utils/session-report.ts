@@ -1,4 +1,4 @@
-import { readdir, stat } from 'node:fs/promises';
+import { readdir, stat, unlink, rmdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { logger } from './logger.js';
@@ -47,6 +47,144 @@ export async function getSessionLogReport(basePath?: string): Promise<SessionLog
     fileCount,
     exists: true,
   };
+}
+
+export interface CleanupResult {
+  deletedFiles: number;
+  freedMb: number;
+}
+
+interface FileEntry {
+  path: string;
+  size: number;
+  mtimeMs: number;
+}
+
+export async function cleanupSessionLogs(options: {
+  maxSizeMb?: number;
+  maxAgeDays?: number;
+  basePath?: string;
+  dryRun?: boolean;
+} = {}): Promise<CleanupResult> {
+  const {
+    maxSizeMb = 200,
+    maxAgeDays = 7,
+    basePath = join(homedir(), '.claude', 'projects'),
+    dryRun = false,
+  } = options;
+
+  const files: FileEntry[] = [];
+
+  async function collectFiles(dir: string): Promise<void> {
+    let entries;
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const fullPath = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        await collectFiles(fullPath);
+      } else if (entry.isFile()) {
+        const fileStat = await stat(fullPath);
+        files.push({ path: fullPath, size: fileStat.size, mtimeMs: fileStat.mtimeMs });
+      }
+    }
+  }
+
+  await collectFiles(basePath);
+
+  let deletedFiles = 0;
+  let freedBytes = 0;
+  const now = Date.now();
+  const maxAgeMs = maxAgeDays * 24 * 60 * 60 * 1000;
+  const deletedPaths = new Set<string>();
+
+  // Phase 1: delete files older than maxAgeDays
+  for (const file of files) {
+    if (now - file.mtimeMs > maxAgeMs) {
+      if (dryRun) {
+        logger.info(`[dry-run] Would delete old file: ${file.path}`);
+      } else {
+        try {
+          await unlink(file.path);
+          logger.info(`Deleted old session file: ${file.path}`);
+        } catch {
+          continue;
+        }
+      }
+      deletedPaths.add(file.path);
+      deletedFiles++;
+      freedBytes += file.size;
+    }
+  }
+
+  // Phase 2: if still over budget, delete oldest remaining files
+  const remaining = files
+    .filter(f => !deletedPaths.has(f.path))
+    .sort((a, b) => a.mtimeMs - b.mtimeMs);
+
+  let totalBytes = remaining.reduce((sum, f) => sum + f.size, 0);
+  const maxBytes = maxSizeMb * 1024 * 1024;
+
+  for (const file of remaining) {
+    if (totalBytes <= maxBytes) break;
+    if (dryRun) {
+      logger.info(`[dry-run] Would delete over-budget file: ${file.path}`);
+    } else {
+      try {
+        await unlink(file.path);
+        logger.info(`Deleted over-budget session file: ${file.path}`);
+      } catch {
+        continue;
+      }
+    }
+    deletedPaths.add(file.path);
+    deletedFiles++;
+    freedBytes += file.size;
+    totalBytes -= file.size;
+  }
+
+  // Phase 3: remove empty directories
+  async function removeEmptyDirs(dir: string): Promise<void> {
+    let entries;
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        await removeEmptyDirs(join(dir, entry.name));
+      }
+    }
+    // Re-read after recursive cleanup
+    try {
+      entries = await readdir(dir);
+    } catch {
+      return;
+    }
+    if (entries.length === 0 && dir !== basePath) {
+      if (dryRun) {
+        logger.info(`[dry-run] Would remove empty directory: ${dir}`);
+      } else {
+        try {
+          await rmdir(dir);
+          logger.info(`Removed empty directory: ${dir}`);
+        } catch {
+          // ignore
+        }
+      }
+    }
+  }
+
+  await removeEmptyDirs(basePath);
+
+  const freedMb = freedBytes / (1024 * 1024);
+  logger.info(`Session cleanup complete: ${deletedFiles} files deleted, ${freedMb.toFixed(1)}MB freed`);
+
+  return { deletedFiles, freedMb };
 }
 
 export function reportSessionLogSize(

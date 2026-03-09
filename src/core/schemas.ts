@@ -90,6 +90,19 @@ export const TimeoutsSchema = z.object({
 });
 
 // =============================================================================
+// Session Cleanup Configuration
+// =============================================================================
+
+export const SessionCleanupSchema = z.object({
+  /** Whether to auto-clean session logs (default: false) */
+  enabled: z.boolean().default(false),
+  /** Max total size in MB before triggering cleanup (default: 200) */
+  maxSizeMb: z.number().positive().default(200),
+  /** Delete session files older than this many days (default: 7) */
+  maxAgeDays: z.number().int().positive().default(7),
+});
+
+// =============================================================================
 // Hook System
 // =============================================================================
 
@@ -207,6 +220,8 @@ export const ConfigSchema = z.object({
   webhook: WebhookConfigSchema.default({}),
   /** Timeout configurations */
   timeouts: TimeoutsSchema.default({}),
+  /** Session log cleanup configuration */
+  sessionCleanup: SessionCleanupSchema.default({}),
   /** Memory ceiling in MB. When RSS exceeds this, queue pauses. 0 = disabled (default: 1024). */
   memoryCeilingMb: z.number().int().nonnegative().default(1024),
   /** How often to check memory in seconds (default: 30) */
@@ -371,6 +386,7 @@ export type MessagingConfig = z.infer<typeof MessagingConfigSchema>;
 
 export type WebhookConfig = z.infer<typeof WebhookConfigSchema>;
 export type Timeouts = z.infer<typeof TimeoutsSchema>;
+export type SessionCleanup = z.infer<typeof SessionCleanupSchema>;
 
 export type ShellHookAction = z.infer<typeof ShellHookActionSchema>;
 export type PromptHookAction = z.infer<typeof PromptHookActionSchema>;
