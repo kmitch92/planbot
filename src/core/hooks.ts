@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { logger } from "../utils/logger.js";
+import { appendBounded, MAX_OUTPUT_CHARS, processRegistry } from '../utils/process-lifecycle.js';
 import type { Hook, HookAction, Hooks } from "./schemas.js";
 
 // =============================================================================
@@ -270,15 +271,18 @@ function executeShellCommand(
       childProcess = spawn("sh", ["-c", command], {
         env,
         cwd,
+        detached: true,
         stdio: ["ignore", "pipe", "pipe"],
       });
 
+      processRegistry.register(childProcess, `hook-shell`);
+
       childProcess.stdout?.on("data", (data: Buffer) => {
-        stdout += data.toString();
+        stdout = appendBounded(stdout, data.toString(), MAX_OUTPUT_CHARS);
       });
 
       childProcess.stderr?.on("data", (data: Buffer) => {
-        stderr += data.toString();
+        stderr = appendBounded(stderr, data.toString(), MAX_OUTPUT_CHARS);
       });
 
       childProcess.on("close", (code) => {

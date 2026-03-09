@@ -17,6 +17,7 @@ import { logger } from '../../utils/logger.js';
 import { checkStalePid, writePidFile, removePidFile } from '../../utils/pid.js';
 import { getSessionLogReport, reportSessionLogSize } from '../../utils/session-report.js';
 import { getMemorySnapshot } from '../../utils/memory-monitor.js';
+import { processRegistry } from '../../utils/process-lifecycle.js';
 
 // =============================================================================
 // Types
@@ -163,6 +164,7 @@ function setupShutdownHandler(orchestrator: Orchestrator, pidPath: string): void
   const shutdown = async (signal: string) => {
     if (shuttingDown) {
       console.log(chalk.yellow('\nForce quitting...'));
+      await processRegistry.killAll();
       process.exit(1);
     }
 
@@ -171,12 +173,14 @@ function setupShutdownHandler(orchestrator: Orchestrator, pidPath: string): void
 
     try {
       await orchestrator.stop();
+      await processRegistry.killAll();
       removePidFile(pidPath);
       console.log(chalk.green('Stopped. Resume with: planbot resume'));
       process.exit(0);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       console.error(chalk.red(`Error during shutdown: ${message}`));
+      await processRegistry.killAll();
       process.exit(1);
     }
   };

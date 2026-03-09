@@ -3,6 +3,7 @@ import { randomBytes } from 'node:crypto';
 import { createWriteStream, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { logger } from '../utils/logger.js';
+import { killWithTimeout, processRegistry } from '../utils/process-lifecycle.js';
 import type { Model } from './schemas.js';
 
 // =============================================================================
@@ -151,8 +152,10 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
 
       const proc = spawn('claude', args, {
         cwd,
+        detached: true,
         stdio: ['pipe', 'pipe', 'pipe'],
       });
+      processRegistry.register(proc, 'claude-plan');
 
       // Write raw output to log file for debugging
       let logStream: ReturnType<typeof createWriteStream> | null = null;
@@ -177,7 +180,7 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
 
       const timer = setTimeout(() => {
         timedOut = true;
-        proc.kill('SIGTERM');
+        killWithTimeout(proc);
         logger.warn('Plan generation timed out', { timeout });
       }, timeout);
 
@@ -245,6 +248,7 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
 
       proc.on('error', (err) => {
         clearTimeout(timer);
+        logStream?.end();
         logger.error('Failed to spawn claude process', { error: err.message });
         resolve({
           success: false,
@@ -424,8 +428,8 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
     }
 
     logger.info('Aborting Claude execution');
-    this.currentProcess.kill('SIGTERM');
-    this.currentProcess = null;
+    killWithTimeout(this.currentProcess);
+    // Do NOT null currentProcess here — the 'close' handler already does it
   }
 
   /**
@@ -466,8 +470,10 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
 
       const proc = spawn('claude', args, {
         cwd,
+        detached: true,
         stdio: ['ignore', 'pipe', 'pipe'],
       });
+      processRegistry.register(proc, 'claude-prompt');
 
       // Write raw output to log file for debugging
       let logStream: ReturnType<typeof createWriteStream> | null = null;
@@ -490,7 +496,7 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
 
       const timer = setTimeout(() => {
         timedOut = true;
-        proc.kill('SIGTERM');
+        killWithTimeout(proc);
         logger.warn('Prompt execution timed out', { timeout });
       }, timeout);
 
@@ -534,6 +540,7 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
 
       proc.on('error', (err) => {
         clearTimeout(timer);
+        logStream?.end();
         logger.error('Failed to spawn claude process (runPrompt)', { error: err.message });
         resolve({
           success: false,
@@ -653,8 +660,10 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
 
       const proc = spawn('claude', args, {
         cwd,
+        detached: true,
         stdio: ['pipe', 'pipe', 'pipe'],
       });
+      processRegistry.register(proc, 'claude-exec');
 
       this.currentProcess = proc;
 
@@ -677,7 +686,7 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
 
       const timer = setTimeout(() => {
         timedOut = true;
-        proc.kill('SIGTERM');
+        killWithTimeout(proc);
         logger.warn('Execution timed out', { timeout });
       }, timeout);
 
@@ -729,6 +738,7 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
 
       proc.on('error', (err) => {
         clearTimeout(timer);
+        logStream?.end();
         this.currentProcess = null;
         logger.error('Failed to spawn claude process', { error: err.message });
         resolve({

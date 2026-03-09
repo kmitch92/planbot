@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { logger } from "../utils/logger.js";
+import { appendBounded, MAX_OUTPUT_CHARS, processRegistry } from '../utils/process-lifecycle.js';
 import type { LoopCondition } from "./schemas.js";
 
 // =============================================================================
@@ -90,8 +91,11 @@ function evaluateShellCondition(
       childProcess = spawn("sh", ["-c", command], {
         cwd: options.cwd,
         env,
+        detached: true,
         stdio: ["ignore", "pipe", "pipe"],
       });
+
+      processRegistry.register(childProcess, 'loop-condition');
     } catch (err) {
       clearTimeout(timer);
       resolve({
@@ -102,11 +106,11 @@ function evaluateShellCondition(
     }
 
     childProcess.stdout?.on("data", (data: Buffer) => {
-      stdout += data.toString();
+      stdout = appendBounded(stdout, data.toString(), MAX_OUTPUT_CHARS);
     });
 
     childProcess.stderr?.on("data", (data: Buffer) => {
-      stderr += data.toString();
+      stderr = appendBounded(stderr, data.toString(), MAX_OUTPUT_CHARS);
     });
 
     childProcess.on("close", (code) => {

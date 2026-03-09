@@ -1,9 +1,21 @@
+import { readdirSync } from 'node:fs';
+import { logger } from './logger.js';
+
 export interface MemorySnapshot {
   rssMb: number;
   heapUsedMb: number;
   heapTotalMb: number;
   externalMb: number;
+  openFds: number;
   timestamp: string;
+}
+
+function getOpenFdCount(): number {
+  try {
+    return readdirSync('/proc/self/fd').length;
+  } catch {
+    return -1;
+  }
 }
 
 export function getMemorySnapshot(): MemorySnapshot {
@@ -13,6 +25,7 @@ export function getMemorySnapshot(): MemorySnapshot {
     heapUsedMb: mem.heapUsed / (1024 * 1024),
     heapTotalMb: mem.heapTotal / (1024 * 1024),
     externalMb: mem.external / (1024 * 1024),
+    openFds: getOpenFdCount(),
     timestamp: new Date().toISOString(),
   };
 }
@@ -43,6 +56,9 @@ export function createMemoryMonitor(): MemoryMonitor {
         latest = getMemorySnapshot();
         if (ceilingMb > 0 && latest.rssMb >= ceilingMb) {
           onHit?.(latest);
+        }
+        if (latest.openFds > 500) {
+          logger.warn('High FD count detected', { openFds: latest.openFds });
         }
       };
 
