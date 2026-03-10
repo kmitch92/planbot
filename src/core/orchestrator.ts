@@ -342,8 +342,10 @@ class OrchestratorImpl
     // Execute beforeAll hooks
     await this.executeHooks(hooks, "beforeAll", {});
 
-    // Process tickets in dependency order
-    for (const ticket of this.getProcessableTickets(tickets)) {
+    // Process tickets in dependency order, re-evaluating after each completion
+    let processable = this.getProcessableTickets(tickets);
+    while (processable.length > 0) {
+      const ticket = processable[0];
       if (this.pauseRequested || this.stopRequested) {
         logger.info("Processing paused/stopped");
         break;
@@ -379,6 +381,9 @@ class OrchestratorImpl
           break;
         }
       }
+
+      // Re-evaluate processable tickets (dependencies may have been unblocked)
+      processable = this.getProcessableTickets(tickets);
     }
 
     // Execute afterAll hooks if not stopped

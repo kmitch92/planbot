@@ -594,4 +594,63 @@ tickets:
       ).rejects.toThrow(ZodError);
     });
   });
+
+  describe("dependency chain re-evaluation", () => {
+    it("should process all tickets in a dependency chain, not just the initially unblocked ones", async () => {
+      const { claude } = await import("../claude.js");
+      const mockedClaude = vi.mocked(claude);
+
+      mockedClaude.generatePlan.mockResolvedValue({
+        success: true,
+        plan: "Mock plan",
+        costUsd: 0.01,
+      });
+
+      mockedClaude.execute.mockResolvedValue({
+        success: true,
+        sessionId: "mock-session-id",
+      });
+
+      const ticketsWithDeps = `
+config:
+  autoApprove: true
+tickets:
+  - id: ticket-a
+    title: Ticket A
+    description: First ticket with no dependencies
+    status: pending
+  - id: ticket-b
+    title: Ticket B
+    description: Second ticket depends on A
+    status: pending
+    dependencies:
+      - ticket-a
+  - id: ticket-c
+    title: Ticket C
+    description: Third ticket depends on B
+    status: pending
+    dependencies:
+      - ticket-b
+`;
+      await writeFile(ticketsFilePath, ticketsWithDeps);
+
+      const orchestrator = createOrchestrator({
+        projectRoot: testDir,
+        ticketsFile: ticketsFilePath,
+        multiplexer,
+      });
+
+      const startedTicketIds: string[] = [];
+      orchestrator.on("ticket:start", (ticket) => {
+        startedTicketIds.push(ticket.id);
+      });
+
+      await orchestrator.start();
+
+      expect(startedTicketIds).toContain("ticket-a");
+      expect(startedTicketIds).toContain("ticket-b");
+      expect(startedTicketIds).toContain("ticket-c");
+      expect(startedTicketIds).toHaveLength(3);
+    });
+  });
 });
