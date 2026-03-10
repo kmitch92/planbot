@@ -1448,7 +1448,7 @@ class OrchestratorImpl
   private getProcessableTickets(tickets: Ticket[]): Ticket[] {
     const allTickets = [...tickets, ...this.dynamicTickets];
     const completed = new Set(
-      allTickets.filter((t) => t.status === "completed").map((t) => t.id)
+      allTickets.filter((t) => t.status === "completed" || t.complete).map((t) => t.id)
     );
     const failed = new Set(
       allTickets.filter((t) => t.status === "failed").map((t) => t.id)

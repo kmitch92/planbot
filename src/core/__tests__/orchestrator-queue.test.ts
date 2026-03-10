@@ -596,6 +596,49 @@ tickets:
   });
 
   describe("dependency chain re-evaluation", () => {
+    it("should recognize YAML-persisted complete: true tickets as satisfied dependencies", async () => {
+      const { claude } = await import("../claude.js");
+      const mockedClaude = vi.mocked(claude);
+
+      mockedClaude.execute.mockResolvedValue({
+        success: true,
+        sessionId: "mock-session-id",
+      });
+
+      const ticketsWithCompleteDep = `
+config:
+  autoApprove: true
+tickets:
+  - id: ticket-a
+    title: Ticket A
+    description: Previously completed ticket persisted in YAML
+    complete: true
+  - id: ticket-b
+    title: Ticket B
+    description: Depends on ticket-a which is complete via YAML flag
+    status: pending
+    complete: false
+    dependencies:
+      - ticket-a
+`;
+      await writeFile(ticketsFilePath, ticketsWithCompleteDep);
+
+      const orchestrator = createOrchestrator({
+        projectRoot: testDir,
+        ticketsFile: ticketsFilePath,
+        multiplexer,
+      });
+
+      const startedTicketIds: string[] = [];
+      orchestrator.on("ticket:start", (ticket) => {
+        startedTicketIds.push(ticket.id);
+      });
+
+      await orchestrator.start();
+
+      expect(startedTicketIds).toContain("ticket-b");
+    });
+
     it("should process all tickets in a dependency chain, not just the initially unblocked ones", async () => {
       const { claude } = await import("../claude.js");
       const mockedClaude = vi.mocked(claude);
