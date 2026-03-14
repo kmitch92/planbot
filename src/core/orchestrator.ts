@@ -20,12 +20,12 @@ import {
 import { resolveAndValidateImages, buildImagePromptSection } from "./images.js";
 import { stateManager } from "./state.js";
 import { markTicketCompleteInFile } from "./tickets-io.js";
-import { claude } from "./claude.js";
+import { claude, getLastRateLimitResetsAt, clearRateLimitResetsAt } from "./claude.js";
 import { hookExecutor, type HookContext } from "./hooks.js";
 import type { Multiplexer } from "../messaging/multiplexer.js";
 import { logger } from "../utils/logger.js";
 import { cleanupSessionLogs } from "../utils/session-report.js";
-import { isRateLimitError, shouldFallback } from "./rate-limit-detection.js";
+import { isRateLimitError, shouldFallback, calculateRateLimitWait } from "./rate-limit-detection.js";
 import { evaluateCondition, type ConditionResult } from "./loop-condition.js";
 import { createMemoryMonitor, getMemorySnapshot, type MemoryMonitor } from "../utils/memory-monitor.js";
 import { interruptibleDelay } from "../utils/interruptible-delay.js";
@@ -362,6 +362,60 @@ class OrchestratorImpl
     logger.info("Pacing delay ended", { reason, completed: result.completed, elapsedMs: result.elapsedMs, ticketId });
 
     return result.completed;
+  }
+
+  private async handleRateLimitWithRetry(
+    ticketId: string,
+    config: Config,
+    retryFn: () => Promise<{ success: boolean; error?: string; sessionId?: string; costUsd?: number }>,
+  ): Promise<{ success: boolean; error?: string; sessionId?: string; costUsd?: number } | null> {
+    const retryConfig = config.rateLimitRetry;
+    if (!retryConfig.enabled) return null;
+
+    const resetsAt = getLastRateLimitResetsAt();
+    const waitResult = calculateRateLimitWait({
+      resetsAt,
+      maxWaitTimeMs: retryConfig.maxWaitTime,
+      retryBufferMs: retryConfig.retryBuffer,
+      fallbackDelayMs: retryConfig.fallbackDelay,
+    });
+
+    if (!waitResult.shouldWait) {
+      logger.info("Rate limit retry skipped", { reason: waitResult.reason, ticketId });
+      return null;
+    }
+
+    logger.info("Rate limit retry: waiting for reset", {
+      waitMs: waitResult.waitMs,
+      reason: waitResult.reason,
+      resetsAt,
+      ticketId,
+    });
+
+    // Notify via multiplexer if configured
+    if (retryConfig.notifyOnWait) {
+      this.multiplexer.broadcastStatus({
+        ticketId,
+        ticketTitle: ticketId,
+        status: "waiting",
+        message: `Rate limit hit — waiting ${formatDuration(waitResult.waitMs)} for reset before retry`,
+      }).catch(err => logger.warn("Failed to broadcast rate limit wait status", { error: String(err) }));
+    }
+
+    // Wait using existing interruptible delay infrastructure
+    const delayCompleted = await this.applyDelay(waitResult.waitMs, "rateLimitRetry", ticketId);
+
+    // Clear stale resetsAt
+    clearRateLimitResetsAt();
+
+    if (!delayCompleted) {
+      logger.info("Rate limit wait interrupted", { ticketId });
+      return null;
+    }
+
+    // Retry the operation
+    logger.info("Rate limit retry: attempting after wait", { ticketId });
+    return retryFn();
   }
 
   private async waitForStartAfter(startAfter: string | undefined, ticketId?: string): Promise<boolean> {
@@ -818,6 +872,51 @@ class OrchestratorImpl
       }, (text) => this.handleOutput(ticket, text));
     }
 
+    // If both primary and fallback hit rate limits, attempt wait-and-retry
+    if (!result.success && isRateLimitError({
+      success: result.success,
+      error: result.error,
+      costUsd: result.costUsd,
+      outputLength: result.plan?.length,
+    }) && config.rateLimitRetry.enabled) {
+      const resetsAt = getLastRateLimitResetsAt();
+      const waitCalc = calculateRateLimitWait({
+        resetsAt,
+        maxWaitTimeMs: config.rateLimitRetry.maxWaitTime,
+        retryBufferMs: config.rateLimitRetry.retryBuffer,
+        fallbackDelayMs: config.rateLimitRetry.fallbackDelay,
+      });
+
+      if (waitCalc.shouldWait) {
+        logger.info("Rate limit retry (plan): waiting for reset", {
+          waitMs: waitCalc.waitMs,
+          reason: waitCalc.reason,
+          ticketId: ticket.id,
+        });
+
+        if (config.rateLimitRetry.notifyOnWait) {
+          this.multiplexer.broadcastStatus({
+            ticketId: ticket.id,
+            ticketTitle: ticket.title,
+            status: "waiting",
+            message: `Rate limit hit during planning — waiting ${formatDuration(waitCalc.waitMs)} for reset`,
+          }).catch(err => logger.warn("Failed to broadcast rate limit wait status", { error: String(err) }));
+        }
+
+        const delayCompleted = await this.applyDelay(waitCalc.waitMs, "rateLimitRetry", ticket.id);
+        clearRateLimitResetsAt();
+
+        if (delayCompleted) {
+          result = await claude.generatePlan(prompt, {
+            model: fallbackModel,
+            timeout: config.timeouts.planGeneration,
+            cwd: ticketCwd,
+            verbose: this.verbose,
+          }, (text) => this.handleOutput(ticket, text));
+        }
+      }
+    }
+
     if (!result.success) {
       throw new Error(result.error ?? "Plan generation failed with unknown error");
     }
@@ -984,6 +1083,49 @@ class OrchestratorImpl
             return;
           }
 
+          // If fallback also hit rate limit, attempt wait-and-retry
+          if (isRateLimitError({ success: fallbackResult.success, error: fallbackResult.error, costUsd: fallbackResult.costUsd })) {
+            const retryResult = await this.handleRateLimitWithRetry(
+              ticket.id,
+              config,
+              () => claude.execute(prompt, {
+                model: config.fallbackModel,
+                skipPermissions: isAutonomous || config.skipPermissions,
+                timeout: config.timeouts.execution,
+                cwd: effectiveCwd,
+                verbose: this.verbose,
+              }, {
+                onEvent: (event) => this.handleClaudeEvent(ticket, event),
+                onQuestion: (q) => this.handleQuestion(ticket, q, config, hooks),
+                onOutput: (text) => this.handleOutput(ticket, text),
+              }),
+            );
+
+            if (retryResult?.success) {
+              if (retryResult.sessionId) {
+                await stateManager.saveSession(this.projectRoot, ticket.id, retryResult.sessionId);
+                await this.updateState({ sessionId: retryResult.sessionId });
+              }
+              if (!this.suppressCompletion) {
+                ticket.status = "completed";
+                await this.saveTicketsFile();
+                await markTicketCompleteInFile(this.ticketsFilePath, ticket.id);
+                await this.executeHooks(hooks, "onComplete", {
+                  ticketId: ticket.id,
+                  ticketTitle: ticket.title,
+                  cwd: effectiveCwd,
+                });
+                this.emit("ticket:completed", ticket);
+                this.multiplexer.broadcastStatus({
+                  ticketId: ticket.id,
+                  ticketTitle: ticket.title,
+                  status: "completed",
+                }).catch(err => logger.warn("Failed to broadcast status", { error: String(err) }));
+              }
+              return;
+            }
+          }
+
           // If fallback fails, throw error to trigger normal retry logic
           throw new Error(fallbackResult.error ?? "Fallback execution failed");
         }
@@ -1110,6 +1252,60 @@ class OrchestratorImpl
           onOutput: (text) => this.handleOutput(ticket, text),
         }
       );
+    }
+
+    // If both primary and fallback hit rate limits, attempt wait-and-retry
+    if (!result.success && isRateLimitError({
+      success: result.success,
+      error: result.error,
+      costUsd: result.costUsd,
+    }) && config.rateLimitRetry.enabled) {
+      const resetsAt = getLastRateLimitResetsAt();
+      const waitCalc = calculateRateLimitWait({
+        resetsAt,
+        maxWaitTimeMs: config.rateLimitRetry.maxWaitTime,
+        retryBufferMs: config.rateLimitRetry.retryBuffer,
+        fallbackDelayMs: config.rateLimitRetry.fallbackDelay,
+      });
+
+      if (waitCalc.shouldWait) {
+        logger.info("Rate limit retry (session): waiting for reset", {
+          waitMs: waitCalc.waitMs,
+          reason: waitCalc.reason,
+          ticketId: ticket.id,
+        });
+
+        if (config.rateLimitRetry.notifyOnWait) {
+          this.multiplexer.broadcastStatus({
+            ticketId: ticket.id,
+            ticketTitle: ticket.title,
+            status: "waiting",
+            message: `Rate limit hit during session resume — waiting ${formatDuration(waitCalc.waitMs)} for reset`,
+          }).catch(err => logger.warn("Failed to broadcast rate limit wait status", { error: String(err) }));
+        }
+
+        const delayCompleted = await this.applyDelay(waitCalc.waitMs, "rateLimitRetry", ticket.id);
+        clearRateLimitResetsAt();
+
+        if (delayCompleted) {
+          result = await claude.resume(
+            sessionId,
+            resumePrompt ?? "Continue from where you left off.",
+            {
+              model: fallbackModel,
+              skipPermissions: isAutonomous || config.skipPermissions,
+              timeout: config.timeouts.execution,
+              cwd: effectiveCwd,
+              verbose: this.verbose,
+            },
+            {
+              onEvent: (event) => this.handleClaudeEvent(ticket, event),
+              onQuestion: (q) => this.handleQuestion(ticket, q, config, hooks),
+              onOutput: (text) => this.handleOutput(ticket, text),
+            }
+          );
+        }
+      }
     }
 
     if (result.success) {
@@ -1535,6 +1731,52 @@ class OrchestratorImpl
           skipPermissions: config?.skipPermissions,
           verbose: this.verbose,
         });
+      }
+
+      // If both primary and fallback hit rate limits, attempt wait-and-retry
+      if (!result.success && isRateLimitError({
+        success: result.success,
+        error: result.error,
+        costUsd: result.costUsd,
+        outputLength: result.output?.length,
+      }) && config?.rateLimitRetry?.enabled) {
+        const retryConfig = config.rateLimitRetry;
+        const resetsAt = getLastRateLimitResetsAt();
+        const waitCalc = calculateRateLimitWait({
+          resetsAt,
+          maxWaitTimeMs: retryConfig.maxWaitTime,
+          retryBufferMs: retryConfig.retryBuffer,
+          fallbackDelayMs: retryConfig.fallbackDelay,
+        });
+
+        if (waitCalc.shouldWait) {
+          logger.info("Rate limit retry (hook): waiting for reset", {
+            waitMs: waitCalc.waitMs,
+            reason: waitCalc.reason,
+          });
+
+          if (retryConfig.notifyOnWait) {
+            this.multiplexer.broadcastStatus({
+              ticketId: context.ticketId ?? "hook",
+              ticketTitle: context.ticketTitle ?? "hook",
+              status: "waiting",
+              message: `Rate limit hit during hook — waiting ${formatDuration(waitCalc.waitMs)} for reset`,
+            }).catch(err => logger.warn("Failed to broadcast rate limit wait status", { error: String(err) }));
+          }
+
+          const delayCompleted = await this.applyDelay(waitCalc.waitMs, "rateLimitRetry", context.ticketId);
+          clearRateLimitResetsAt();
+
+          if (delayCompleted) {
+            result = await claude.runPrompt(prompt, {
+              model: fallbackModel,
+              cwd: this.projectRoot,
+              timeout: 300000,
+              skipPermissions: config?.skipPermissions,
+              verbose: this.verbose,
+            });
+          }
+        }
       }
 
       return {
