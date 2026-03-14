@@ -42,7 +42,7 @@ export interface PlanResult {
 }
 
 export interface StreamEvent {
-  type: 'init' | 'user' | 'assistant' | 'result' | 'tool_use' | 'tool_result' | 'error' | 'system';
+  type: 'init' | 'user' | 'assistant' | 'result' | 'tool_use' | 'tool_result' | 'error' | 'system' | 'rate_limit';
   /** For assistant messages */
   message?: string;
   /** For tool_use */
@@ -56,6 +56,15 @@ export interface StreamEvent {
   sessionId?: string;
   /** For error */
   error?: string;
+  /** For rate_limit */
+  rateLimitInfo?: {
+    status: string;
+    resetsAt: number;
+    rateLimitType: string;
+    overageStatus: string;
+    overageDisabledReason?: string;
+    isUsingOverage: boolean;
+  };
 }
 
 export interface ExecutionCallbacks {
@@ -121,6 +130,28 @@ interface ClaudeJsonOutput {
   tool_input?: Record<string, unknown>;
   tool_result?: unknown;
   content?: Array<{ type: string; text?: string }>;
+  rate_limit_info?: {
+    status?: string;
+    resetsAt?: number;
+    rateLimitType?: string;
+    overageStatus?: string;
+    overageDisabledReason?: string;
+    isUsingOverage?: boolean;
+  };
+}
+
+// =============================================================================
+// Module-Level Rate Limit State
+// =============================================================================
+
+let lastRateLimitResetsAt: number | null = null;
+
+export function getLastRateLimitResetsAt(): number | null {
+  return lastRateLimitResetsAt;
+}
+
+export function clearRateLimitResetsAt(): void {
+  lastRateLimitResetsAt = null;
 }
 
 // =============================================================================
@@ -231,6 +262,11 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
               }
             } else if (type === 'error') {
               errorMessage = (parsed.error ?? parsed.message) as string | undefined;
+            } else if (type === 'rate_limit_event') {
+              const info = (parsed as Record<string, unknown>).rate_limit_info as Record<string, unknown> | undefined;
+              if (info?.resetsAt != null) {
+                lastRateLimitResetsAt = info.resetsAt as number;
+              }
             }
           } catch {
             // Not valid JSON, skip
@@ -276,6 +312,11 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
               if (resultText) assistantMessages.push(resultText);
             } else if (type === 'error') {
               errorMessage = (parsed.error ?? parsed.message) as string | undefined;
+            } else if (type === 'rate_limit_event') {
+              const info = (parsed as Record<string, unknown>).rate_limit_info as Record<string, unknown> | undefined;
+              if (info?.resetsAt != null) {
+                lastRateLimitResetsAt = info.resetsAt as number;
+              }
             }
           } catch {
             // Not valid JSON
@@ -524,6 +565,11 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
                 ?? parsed.cost_usd as number | undefined;
             } else if (type === 'error') {
               errorMessage = (parsed.error ?? parsed.message) as string | undefined;
+            } else if (type === 'rate_limit_event') {
+              const info = (parsed as Record<string, unknown>).rate_limit_info as Record<string, unknown> | undefined;
+              if (info?.resetsAt != null) {
+                lastRateLimitResetsAt = info.resetsAt as number;
+              }
             }
           } catch {
             // Not valid JSON, skip
@@ -565,6 +611,11 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
                 ?? parsed.cost_usd as number | undefined;
             } else if (type === 'error') {
               errorMessage = (parsed.error ?? parsed.message) as string | undefined;
+            } else if (type === 'rate_limit_event') {
+              const info = (parsed as Record<string, unknown>).rate_limit_info as Record<string, unknown> | undefined;
+              if (info?.resetsAt != null) {
+                lastRateLimitResetsAt = info.resetsAt as number;
+              }
             }
           } catch {
             // Not valid JSON
@@ -893,6 +944,25 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
           type,
           message: this.extractTextContent(output),
         };
+
+      case 'rate_limit_event': {
+        const info = output.rate_limit_info;
+        if (!info) return null;
+        if (info.resetsAt != null) {
+          lastRateLimitResetsAt = info.resetsAt;
+        }
+        return {
+          type: 'rate_limit',
+          rateLimitInfo: {
+            status: info.status ?? '',
+            resetsAt: info.resetsAt ?? 0,
+            rateLimitType: info.rateLimitType ?? '',
+            overageStatus: info.overageStatus ?? '',
+            overageDisabledReason: info.overageDisabledReason,
+            isUsingOverage: info.isUsingOverage ?? false,
+          },
+        };
+      }
 
       default:
         return null;
