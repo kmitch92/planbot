@@ -100,6 +100,16 @@ config:
 #    delayBetweenRetries: "30s"           # Wait between retry attempts
 #    startAfter: "2026-03-15T06:00:00Z"  # Don't start queue until this time
 #
+#  # --- Rate Limit Wait-and-Retry ---
+#  # When Claude hits session/usage limits, wait for reset instead of failing.
+#  # Requires a fallback model attempt to also fail before waiting.
+#  rateLimitRetry:
+#    enabled: true                     # Opt-in: wait for rate limit reset (default: false)
+#    maxWaitTime: "6h"                 # Max wait per reset cycle (default: 6h)
+#    retryBuffer: "30s"               # Buffer after resetsAt before retry (default: 30s)
+#    fallbackDelay: "5m"              # Delay when reset time unknown (default: 5m)
+#    notifyOnWait: true                # Send messaging notification (default: true)
+#
 #  # --- Messaging Providers (pick one) ---
 #  # Telegram:
 #  messaging:
