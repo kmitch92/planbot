@@ -126,3 +126,92 @@ export function shouldFallback(
 ): boolean {
   return currentModel !== fallbackModel;
 }
+
+/**
+ * Input for calculating how long to wait before retrying after a rate limit.
+ */
+export interface RateLimitWaitInput {
+  /** Epoch seconds when the rate limit resets, or null if unknown */
+  resetsAt: number | null;
+  /** Maximum time in ms the caller is willing to wait */
+  maxWaitTimeMs: number;
+  /** Buffer in ms added after reset time to avoid edge-case failures */
+  retryBufferMs: number;
+  /** Fallback delay in ms when no reset time is available */
+  fallbackDelayMs: number;
+}
+
+/**
+ * Result of rate limit wait calculation.
+ */
+export interface RateLimitWaitResult {
+  /** Whether the caller should wait and retry */
+  shouldWait: boolean;
+  /** How long to wait in ms (0 if shouldWait is false) */
+  waitMs: number;
+  /** Human-readable explanation of the decision */
+  reason: string;
+}
+
+/**
+ * Calculates how long to wait before retrying after hitting a rate limit.
+ *
+ * Decision logic:
+ * 1. If resetsAt is null, uses fallbackDelayMs (unless it exceeds maxWaitTimeMs)
+ * 2. If resetsAt is in the past or exactly now, waits only the retryBufferMs
+ * 3. If resetsAt is in the future, waits (delta + retryBufferMs) if within maxWaitTimeMs
+ *
+ * @param input - Rate limit wait parameters
+ * @returns Whether to wait, how long, and why
+ */
+export function calculateRateLimitWait(
+  input: RateLimitWaitInput
+): RateLimitWaitResult {
+  const { resetsAt, maxWaitTimeMs, retryBufferMs, fallbackDelayMs } = input;
+
+  // No resetsAt available — use fallback delay
+  if (resetsAt == null) {
+    if (fallbackDelayMs > maxWaitTimeMs) {
+      return {
+        shouldWait: false,
+        waitMs: 0,
+        reason: "Fallback delay exceeds max wait time",
+      };
+    }
+    return {
+      shouldWait: true,
+      waitMs: fallbackDelayMs,
+      reason: "No reset time available, using fallback delay",
+    };
+  }
+
+  // Convert resetsAt (epoch seconds) to ms and compute delta
+  const resetsAtMs = resetsAt * 1000;
+  const now = Date.now();
+  const deltaMs = resetsAtMs - now;
+
+  // resetsAt is in the past or exactly now — just wait the buffer
+  if (deltaMs <= 0) {
+    return {
+      shouldWait: true,
+      waitMs: retryBufferMs,
+      reason: "Reset time already passed, waiting retry buffer",
+    };
+  }
+
+  // resetsAt is in the future — check if within max wait
+  const totalWaitMs = deltaMs + retryBufferMs;
+  if (totalWaitMs > maxWaitTimeMs) {
+    return {
+      shouldWait: false,
+      waitMs: 0,
+      reason: "Wait time exceeds maximum allowed",
+    };
+  }
+
+  return {
+    shouldWait: true,
+    waitMs: totalWaitMs,
+    reason: "Waiting for rate limit reset",
+  };
+}

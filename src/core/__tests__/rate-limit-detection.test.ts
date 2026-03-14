@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  calculateRateLimitWait,
   isRateLimitError,
   shouldFallback,
 } from "../rate-limit-detection.js";
@@ -311,5 +312,141 @@ describe("shouldFallback()", () => {
 
       expect(result).toBe(true);
     });
+  });
+});
+
+describe("calculateRateLimitWait()", () => {
+  const FIXED_NOW = 1700000000000;
+  const SIX_HOURS_MS = 6 * 60 * 60 * 1000;
+
+  beforeEach(() => {
+    vi.useFakeTimers({ now: FIXED_NOW });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("returns wait with delta plus buffer when resetsAt is in future within maxWaitTime", () => {
+    const resetsAtEpochSeconds = FIXED_NOW / 1000 + 300;
+
+    const result = calculateRateLimitWait({
+      resetsAt: resetsAtEpochSeconds,
+      maxWaitTimeMs: SIX_HOURS_MS,
+      retryBufferMs: 30_000,
+      fallbackDelayMs: 300_000,
+    });
+
+    expect(result.shouldWait).toBe(true);
+    expect(result.waitMs).toBe(330_000);
+  });
+
+  it("returns shouldWait false when resetsAt exceeds maxWaitTime", () => {
+    const sevenHoursInSeconds = 7 * 60 * 60;
+    const resetsAtEpochSeconds = FIXED_NOW / 1000 + sevenHoursInSeconds;
+
+    const result = calculateRateLimitWait({
+      resetsAt: resetsAtEpochSeconds,
+      maxWaitTimeMs: SIX_HOURS_MS,
+      retryBufferMs: 30_000,
+      fallbackDelayMs: 300_000,
+    });
+
+    expect(result.shouldWait).toBe(false);
+  });
+
+  it("returns retryBuffer as waitMs when resetsAt is in the past", () => {
+    const resetsAtEpochSeconds = FIXED_NOW / 1000 - 60;
+
+    const result = calculateRateLimitWait({
+      resetsAt: resetsAtEpochSeconds,
+      maxWaitTimeMs: SIX_HOURS_MS,
+      retryBufferMs: 30_000,
+      fallbackDelayMs: 300_000,
+    });
+
+    expect(result.shouldWait).toBe(true);
+    expect(result.waitMs).toBe(30_000);
+  });
+
+  it("returns fallbackDelay as waitMs when resetsAt is null", () => {
+    const result = calculateRateLimitWait({
+      resetsAt: null,
+      maxWaitTimeMs: SIX_HOURS_MS,
+      retryBufferMs: 30_000,
+      fallbackDelayMs: 300_000,
+    });
+
+    expect(result.shouldWait).toBe(true);
+    expect(result.waitMs).toBe(300_000);
+  });
+
+  it("returns shouldWait false when resetsAt is null and fallbackDelay exceeds maxWaitTime", () => {
+    const sevenHoursMs = 7 * 60 * 60 * 1000;
+
+    const result = calculateRateLimitWait({
+      resetsAt: null,
+      maxWaitTimeMs: SIX_HOURS_MS,
+      retryBufferMs: 30_000,
+      fallbackDelayMs: sevenHoursMs,
+    });
+
+    expect(result.shouldWait).toBe(false);
+  });
+
+  it("returns retryBuffer as waitMs when resetsAt is exactly now", () => {
+    const resetsAtEpochSeconds = FIXED_NOW / 1000;
+
+    const result = calculateRateLimitWait({
+      resetsAt: resetsAtEpochSeconds,
+      maxWaitTimeMs: SIX_HOURS_MS,
+      retryBufferMs: 30_000,
+      fallbackDelayMs: 300_000,
+    });
+
+    expect(result.shouldWait).toBe(true);
+    expect(result.waitMs).toBe(30_000);
+  });
+
+  it("includes a descriptive reason string in every result", () => {
+    const futureResult = calculateRateLimitWait({
+      resetsAt: FIXED_NOW / 1000 + 300,
+      maxWaitTimeMs: SIX_HOURS_MS,
+      retryBufferMs: 30_000,
+      fallbackDelayMs: 300_000,
+    });
+
+    const exceedsMaxResult = calculateRateLimitWait({
+      resetsAt: FIXED_NOW / 1000 + 7 * 60 * 60,
+      maxWaitTimeMs: SIX_HOURS_MS,
+      retryBufferMs: 30_000,
+      fallbackDelayMs: 300_000,
+    });
+
+    const nullResult = calculateRateLimitWait({
+      resetsAt: null,
+      maxWaitTimeMs: SIX_HOURS_MS,
+      retryBufferMs: 30_000,
+      fallbackDelayMs: 300_000,
+    });
+
+    const pastResult = calculateRateLimitWait({
+      resetsAt: FIXED_NOW / 1000 - 60,
+      maxWaitTimeMs: SIX_HOURS_MS,
+      retryBufferMs: 30_000,
+      fallbackDelayMs: 300_000,
+    });
+
+    expect(futureResult.reason).toEqual(expect.any(String));
+    expect(futureResult.reason.length).toBeGreaterThan(0);
+
+    expect(exceedsMaxResult.reason).toEqual(expect.any(String));
+    expect(exceedsMaxResult.reason.length).toBeGreaterThan(0);
+
+    expect(nullResult.reason).toEqual(expect.any(String));
+    expect(nullResult.reason.length).toBeGreaterThan(0);
+
+    expect(pastResult.reason).toEqual(expect.any(String));
+    expect(pastResult.reason.length).toBeGreaterThan(0);
   });
 });
