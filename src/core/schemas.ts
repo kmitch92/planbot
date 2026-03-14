@@ -119,6 +119,23 @@ export const PacingSchema = z.object({
 });
 
 // =============================================================================
+// Rate Limit Retry Configuration
+// =============================================================================
+
+export const RateLimitRetrySchema = z.object({
+  /** Whether rate limit wait-and-retry is enabled (default: false, preserves current behavior) */
+  enabled: z.boolean().default(false),
+  /** Maximum time to wait for a rate limit reset (default: 6h) */
+  maxWaitTime: DurationSchema.default("6h"),
+  /** Buffer time after resetsAt before retrying (default: 30s) */
+  retryBuffer: DurationSchema.default("30s"),
+  /** Delay when resetsAt is unavailable (default: 5m) */
+  fallbackDelay: DurationSchema.default("5m"),
+  /** Send messaging notification when waiting (default: true) */
+  notifyOnWait: z.boolean().default(true),
+});
+
+// =============================================================================
 // Hook System
 // =============================================================================
 
@@ -240,6 +257,8 @@ export const ConfigSchema = z.object({
   sessionCleanup: SessionCleanupSchema.default({}),
   /** Pacing controls for delays between executions */
   pacing: PacingSchema.default({}),
+  /** Rate limit wait-and-retry configuration */
+  rateLimitRetry: RateLimitRetrySchema.default({}),
   /** Memory ceiling in MB. When RSS exceeds this, queue pauses. 0 = disabled (default: 1024). */
   memoryCeilingMb: z.number().int().nonnegative().default(1024),
   /** How often to check memory in seconds (default: 30) */
@@ -408,6 +427,7 @@ export type WebhookConfig = z.infer<typeof WebhookConfigSchema>;
 export type Timeouts = z.infer<typeof TimeoutsSchema>;
 export type SessionCleanup = z.infer<typeof SessionCleanupSchema>;
 export type Pacing = z.infer<typeof PacingSchema>;
+export type RateLimitRetry = z.infer<typeof RateLimitRetrySchema>;
 
 export type ShellHookAction = z.infer<typeof ShellHookActionSchema>;
 export type PromptHookAction = z.infer<typeof PromptHookActionSchema>;
