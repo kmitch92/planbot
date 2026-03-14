@@ -12,6 +12,7 @@ import {
   type Hooks,
   type PendingQuestion,
   type LoopConfig,
+  type Pacing,
   parseTicketsFile,
   validateTicketDependencies,
   TicketSchema,
@@ -27,6 +28,8 @@ import { cleanupSessionLogs } from "../utils/session-report.js";
 import { isRateLimitError, shouldFallback } from "./rate-limit-detection.js";
 import { evaluateCondition, type ConditionResult } from "./loop-condition.js";
 import { createMemoryMonitor, getMemorySnapshot, type MemoryMonitor } from "../utils/memory-monitor.js";
+import { interruptibleDelay } from "../utils/interruptible-delay.js";
+import { formatDuration } from "../utils/duration.js";
 
 // =============================================================================
 // Types and Interfaces
@@ -58,6 +61,9 @@ export interface OrchestratorEvents {
   "loop:iteration-start": [ticket: Ticket, iteration: number, maxIterations: number];
   "loop:iteration-complete": [ticket: Ticket, iteration: number, conditionMet: boolean];
   "loop:condition-failed": [ticket: Ticket, iteration: number, error: string];
+  "pacing:delay-start": [reason: string, durationMs: number, ticketId?: string];
+  "pacing:delay-tick": [reason: string, elapsedMs: number, remainingMs: number, ticketId?: string];
+  "pacing:delay-end": [reason: string, completed: boolean, elapsedMs: number, ticketId?: string];
   error: [error: Error];
 }
 
@@ -329,6 +335,48 @@ class OrchestratorImpl
   }
 
   // ===========================================================================
+  // Private: Pacing Controls
+  // ===========================================================================
+
+  private resolvePacing(ticket: Ticket, config: Config): Pacing {
+    const global = config.pacing ?? {};
+    const perTicket = ticket.pacing ?? {};
+    return { ...global, ...perTicket };
+  }
+
+  private async applyDelay(durationMs: number, reason: string, ticketId?: string): Promise<boolean> {
+    if (!durationMs || durationMs <= 0) return true;
+
+    logger.info("Pacing delay starting", { reason, durationMs: formatDuration(durationMs), ticketId });
+    this.emit("pacing:delay-start", reason, durationMs, ticketId);
+
+    const result = await interruptibleDelay({
+      durationMs,
+      shouldInterrupt: () => this.pauseRequested || this.stopRequested,
+      onTick: (elapsed, remaining) => {
+        this.emit("pacing:delay-tick", reason, elapsed, remaining, ticketId);
+      },
+    });
+
+    this.emit("pacing:delay-end", reason, result.completed, result.elapsedMs, ticketId);
+    logger.info("Pacing delay ended", { reason, completed: result.completed, elapsedMs: result.elapsedMs, ticketId });
+
+    return result.completed;
+  }
+
+  private async waitForStartAfter(startAfter: string | undefined, ticketId?: string): Promise<boolean> {
+    if (!startAfter) return true;
+
+    const targetTime = new Date(startAfter).getTime();
+    const now = Date.now();
+    const delayMs = targetTime - now;
+
+    if (delayMs <= 0) return true;
+
+    return this.applyDelay(delayMs, "startAfter", ticketId);
+  }
+
+  // ===========================================================================
   // Private: Queue Processing
   // ===========================================================================
 
@@ -342,6 +390,18 @@ class OrchestratorImpl
     // Execute beforeAll hooks
     await this.executeHooks(hooks, "beforeAll", {});
 
+    // Global startAfter pacing check
+    if (config.pacing?.startAfter) {
+      const proceeded = await this.waitForStartAfter(config.pacing.startAfter);
+      if (!proceeded) {
+        logger.info("Pacing startAfter interrupted, pausing queue");
+        this.pauseRequested = true;
+        this.running = false;
+        this.emit("queue:paused");
+        return;
+      }
+    }
+
     // Process tickets in dependency order, re-evaluating after each completion
     let processable = this.getProcessableTickets(tickets);
     while (processable.length > 0) {
@@ -354,6 +414,17 @@ class OrchestratorImpl
       if (this.memoryMonitor?.isAboveCeiling()) {
         logger.warn('Memory above ceiling before processing next ticket, pausing queue');
         break;
+      }
+
+      // Per-ticket pacing checks
+      const ticketPacing = this.resolvePacing(ticket, config);
+      if (ticketPacing.startAfter) {
+        const proceeded = await this.waitForStartAfter(ticketPacing.startAfter, ticket.id);
+        if (!proceeded) {
+          logger.info("Per-ticket startAfter interrupted", { ticketId: ticket.id });
+          this.pauseRequested = true;
+          break;
+        }
       }
 
       try {
@@ -384,6 +455,19 @@ class OrchestratorImpl
 
       // Re-evaluate processable tickets (dependencies may have been unblocked)
       processable = this.getProcessableTickets(tickets);
+
+      // Delay between tickets (only if more tickets to process)
+      if (processable.length > 0) {
+        const postTicketPacing = this.resolvePacing(ticket, config);
+        if (postTicketPacing.delayBetweenTickets) {
+          const proceeded = await this.applyDelay(postTicketPacing.delayBetweenTickets, "delayBetweenTickets", ticket.id);
+          if (!proceeded) {
+            logger.info("Delay between tickets interrupted", { ticketId: ticket.id });
+            this.pauseRequested = true;
+            break;
+          }
+        }
+      }
     }
 
     // Execute afterAll hooks if not stopped
@@ -951,6 +1035,18 @@ class OrchestratorImpl
           maxRetries,
           error: error.message,
         });
+
+        // Delay between retries
+        const retryPacing = this.resolvePacing(ticket, config);
+        if (retryPacing.delayBetweenRetries) {
+          const proceeded = await this.applyDelay(retryPacing.delayBetweenRetries, "delayBetweenRetries", ticket.id);
+          if (!proceeded) {
+            logger.info("Delay between retries interrupted", { ticketId: ticket.id });
+            ticket.status = "failed";
+            await this.saveTicketsFile();
+            throw new Error("Retry delay interrupted by pause/stop");
+          }
+        }
       }
     }
   }
@@ -1183,6 +1279,16 @@ class OrchestratorImpl
           maxIterations,
           conditionOutput: conditionResult.output?.slice(0, 200),
         });
+
+        // Delay between loop iterations
+        const iterPacing = this.resolvePacing(ticket, config);
+        if (iterPacing.delayBetweenIterations) {
+          const proceeded = await this.applyDelay(iterPacing.delayBetweenIterations, "delayBetweenIterations", ticket.id);
+          if (!proceeded) {
+            logger.info("Delay between iterations interrupted", { ticketId: ticket.id });
+            break;
+          }
+        }
       }
     } finally {
       this.suppressCompletion = false;
