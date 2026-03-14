@@ -92,6 +92,14 @@ config:
 #    approval: 86400000            # 24 hours (default)
 #    question: 3600000             # 1 hour (default)
 #
+#  # --- Pacing Controls (delay between Claude executions) ---
+#  # Spread token usage across time windows. Durations: "5m", "1h30m", "30s" or ms.
+#  pacing:
+#    delayBetweenTickets: "5m"            # Wait after each ticket before starting next
+#    delayBetweenIterations: "2m"         # Wait between loop iterations
+#    delayBetweenRetries: "30s"           # Wait between retry attempts
+#    startAfter: "2026-03-15T06:00:00Z"  # Don't start queue until this time
+#
 #  # --- Messaging Providers (pick one) ---
 #  # Telegram:
 #  messaging:
@@ -335,6 +343,28 @@ tickets:
   #     condition:
   #       type: shell
   #       command: npm run test:coverage -- --passWithNoTests
+
+  # ---------------------------------------------------------------------------
+  # Ticket with Pacing — per-ticket delay overrides
+  # ---------------------------------------------------------------------------
+  # Override global pacing for specific tickets. Useful for heavy tasks that
+  # need longer cooldowns, or tickets that should start at a specific time.
+  #
+  # - id: heavy-refactor
+  #   title: Large-scale refactor
+  #   description: |
+  #     Refactor the authentication module. This is resource-intensive,
+  #     so we space out iterations and delay the start.
+  #   planMode: false
+  #   pacing:
+  #     delayBetweenIterations: "10m"       # Override global (e.g. "2m") with longer cooldown
+  #     startAfter: "2026-03-15T22:00:00Z"  # Run overnight when token budget resets
+  #   loop:
+  #     goal: "Complete auth module refactor"
+  #     condition:
+  #       type: shell
+  #       command: npm run build && npm test
+  #     maxIterations: 10
 `;
 
 // =============================================================================
