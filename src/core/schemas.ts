@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { DurationSchema } from "../utils/duration.js";
 
 // =============================================================================
 // Environment Variable Substitution Pattern
@@ -100,6 +101,21 @@ export const SessionCleanupSchema = z.object({
   maxSizeMb: z.number().positive().default(200),
   /** Delete session files older than this many days (default: 7) */
   maxAgeDays: z.number().int().positive().default(7),
+});
+
+// =============================================================================
+// Pacing Configuration
+// =============================================================================
+
+export const PacingSchema = z.object({
+  /** Delay in ms after a ticket completes, before the next starts */
+  delayBetweenTickets: DurationSchema.optional(),
+  /** Delay in ms between loop iterations */
+  delayBetweenIterations: DurationSchema.optional(),
+  /** Delay in ms between retry attempts */
+  delayBetweenRetries: DurationSchema.optional(),
+  /** ISO datetime — don't start processing until this time */
+  startAfter: z.string().datetime().optional(),
 });
 
 // =============================================================================
@@ -222,6 +238,8 @@ export const ConfigSchema = z.object({
   timeouts: TimeoutsSchema.default({}),
   /** Session log cleanup configuration */
   sessionCleanup: SessionCleanupSchema.default({}),
+  /** Pacing controls for delays between executions */
+  pacing: PacingSchema.default({}),
   /** Memory ceiling in MB. When RSS exceeds this, queue pauses. 0 = disabled (default: 1024). */
   memoryCeilingMb: z.number().int().nonnegative().default(1024),
   /** How often to check memory in seconds (default: 30) */
@@ -286,6 +304,8 @@ export const TicketSchema = z.object({
     .optional(),
   /** Loop configuration for iterative execution */
   loop: LoopConfigSchema.optional(),
+  /** Per-ticket pacing overrides (merges with global config.pacing) */
+  pacing: PacingSchema.partial().optional(),
   /** Whether the ticket has been completed (persisted to YAML for restart resilience) */
   complete: z.boolean().default(false),
 });
@@ -387,6 +407,7 @@ export type MessagingConfig = z.infer<typeof MessagingConfigSchema>;
 export type WebhookConfig = z.infer<typeof WebhookConfigSchema>;
 export type Timeouts = z.infer<typeof TimeoutsSchema>;
 export type SessionCleanup = z.infer<typeof SessionCleanupSchema>;
+export type Pacing = z.infer<typeof PacingSchema>;
 
 export type ShellHookAction = z.infer<typeof ShellHookActionSchema>;
 export type PromptHookAction = z.infer<typeof PromptHookActionSchema>;
