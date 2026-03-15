@@ -560,3 +560,109 @@ describe("Prompt Hook Execution with claudeRunner", () => {
     expect(mockClaudeRunner).toHaveBeenCalledTimes(1);
   });
 });
+
+// =============================================================================
+// Every — Hook Frequency Control Tests
+// =============================================================================
+
+describe("every — hook frequency control", () => {
+  let executeActionSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    executeActionSpy = vi.spyOn(hookExecutor, "executeAction");
+  });
+
+  afterEach(() => {
+    executeActionSpy.mockRestore();
+  });
+
+  it("runs action with every: 3 when iteration is 2 (3rd iteration)", async () => {
+    const action = { ...createPromptAction("every-3-fires"), every: 3 } as HookAction;
+    const hook: Hook = [action] as Hook;
+    const context = createContext({ iteration: 2 });
+
+    await hookExecutor.executeHook(hook, context);
+
+    expect(executeActionSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("skips action with every: 3 when iteration is 1", async () => {
+    const action = { ...createPromptAction("every-3-skipped"), every: 3 } as HookAction;
+    const hook: Hook = [action] as Hook;
+    const context = createContext({ iteration: 1 });
+
+    const results = await hookExecutor.executeHook(hook, context);
+
+    expect(executeActionSpy).not.toHaveBeenCalled();
+    expect(results).toHaveLength(0);
+  });
+
+  it("runs action with every: 3 when iteration is 5 (6th iteration)", async () => {
+    const action = { ...createPromptAction("every-3-sixth"), every: 3 } as HookAction;
+    const hook: Hook = [action] as Hook;
+    const context = createContext({ iteration: 5 });
+
+    await hookExecutor.executeHook(hook, context);
+
+    expect(executeActionSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("always runs action without every regardless of iteration", async () => {
+    const action = createPromptAction("no-every-property");
+    const hook: Hook = [action];
+    const context = createContext({ iteration: 7 });
+
+    await hookExecutor.executeHook(hook, context);
+
+    expect(executeActionSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("always runs action with every when context has no iteration", async () => {
+    const action = { ...createPromptAction("every-but-no-iteration"), every: 5 } as HookAction;
+    const hook: Hook = [action] as Hook;
+    const context = createContext();
+
+    await hookExecutor.executeHook(hook, context);
+
+    expect(executeActionSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("filters mixed actions correctly based on every and iteration", async () => {
+    const alwaysRuns = createPromptAction("no-every");
+    const everyTwo = { ...createPromptAction("every-2"), every: 2 } as HookAction;
+    const everyThree = { ...createPromptAction("every-3"), every: 3 } as HookAction;
+
+    const hook: Hook = [alwaysRuns, everyTwo, everyThree] as Hook;
+    const context = createContext({ iteration: 1 });
+
+    const results = await hookExecutor.executeHook(hook, context);
+
+    expect(executeActionSpy).toHaveBeenCalledTimes(2);
+    expect(executeActionSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ command: "no-every" }),
+      context,
+      undefined
+    );
+    expect(executeActionSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ command: "every-2" }),
+      context,
+      undefined
+    );
+    expect(results).toHaveLength(2);
+  });
+
+  it("runs action with every: 1 on every iteration", async () => {
+    const action = { ...createPromptAction("every-1"), every: 1 } as HookAction;
+    const hook: Hook = [action] as Hook;
+
+    for (const iteration of [0, 1, 2, 5, 99]) {
+      executeActionSpy.mockClear();
+      const context = createContext({ iteration });
+
+      await hookExecutor.executeHook(hook, context);
+
+      expect(executeActionSpy).toHaveBeenCalledTimes(1);
+    }
+  });
+});
