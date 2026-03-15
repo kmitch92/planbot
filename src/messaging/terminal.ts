@@ -53,6 +53,7 @@ const STATUS_ICONS = {
   completed: { icon: "✓", color: "green" as const },
   failed: { icon: "✗", color: "red" as const },
   skipped: { icon: "−", color: "yellow" as const },
+  waiting: { icon: "◷", color: "cyan" as const },
 } as const;
 
 /**

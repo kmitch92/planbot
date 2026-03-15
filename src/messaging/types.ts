@@ -72,7 +72,7 @@ export interface StatusMessage {
   /** Short title of the ticket */
   ticketTitle: string;
   /** Current status of the ticket */
-  status: "started" | "completed" | "failed" | "skipped";
+  status: "started" | "completed" | "failed" | "skipped" | "waiting";
   /** Optional message providing additional context */
   message?: string;
   /** Error details if status is 'failed' */

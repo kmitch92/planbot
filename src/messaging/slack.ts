@@ -35,6 +35,7 @@ const STATUS_EMOJI: Record<StatusMessage["status"], string> = {
   completed: ":white_check_mark:",
   failed: ":x:",
   skipped: ":fast_forward:",
+  waiting: ":hourglass_flowing_sand:",
 };
 
 /**

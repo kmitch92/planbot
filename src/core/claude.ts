@@ -873,7 +873,7 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
   }
 
   private parseStreamEvent(output: ClaudeJsonOutput): StreamEvent | null {
-    const type = output.type as StreamEvent['type'] | undefined;
+    const type = output.type as string | undefined;
 
     if (!type) {
       // Try to infer type from content

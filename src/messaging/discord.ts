@@ -45,6 +45,7 @@ const STATUS_COLORS = {
   completed: 0x2ecc71, // Green
   failed: 0xe74c3c, // Red
   skipped: 0xf1c40f, // Yellow
+  waiting: 0x9b59b6, // Purple
 } as const;
 
 /**
@@ -55,6 +56,7 @@ const STATUS_ICONS = {
   completed: "✅",
   failed: "❌",
   skipped: "⏭️",
+  waiting: "⏳",
 } as const;
 
 /**
