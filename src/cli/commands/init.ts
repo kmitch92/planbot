@@ -311,8 +311,11 @@ tickets:
   #     maxIterations: 15
   #   hooks:
   #     onIterationComplete:
+  #       - type: prompt
+  #         command: /commit
+  #         every: 10               # Only run every 10th iteration
   #       - type: shell
-  #         command: npm run test:coverage -- --reporter=text-summary
+  #         command: npm run test:coverage -- --reporter=text-summary  # Runs every iteration
 
   # ---------------------------------------------------------------------------
   # Loop Ticket with Prompt Condition — iterate until Claude confirms done
