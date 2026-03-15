@@ -30,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Interruptible delay utility (`src/utils/interruptible-delay.ts`): Cancellable sleep with polling and interrupt support
 - `maxPlanRevisions` config option (default: 3) — controls how many times a plan can be revised after rejection with feedback
 - `approved` and `rejectionReason` fields on `HookContext` interface, exposed as `PLANBOT_APPROVED` and `PLANBOT_REJECTION_REASON` environment variables in shell hooks
+- **Hook frequency control**: `every` property on hook actions controls how often they fire during loop iterations. `every: N` runs the action every N-th iteration. Configured per-action (not per-event), allowing mixed frequencies within the same hook. Gracefully ignored for non-loop hooks.
 
 ### Fixed
 
