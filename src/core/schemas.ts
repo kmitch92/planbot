@@ -146,11 +146,13 @@ export const ShellHookActionSchema = z.object({
   cwd: z.string().min(1).max(500)
     .refine(val => !val.includes('..'), { message: 'Path must not contain ..' })
     .optional(),
+  every: z.number().int().min(1).optional(),
 });
 
 export const PromptHookActionSchema = z.object({
   type: z.literal("prompt"),
   command: z.string().min(1).max(50000),
+  every: z.number().int().min(1).optional(),
 });
 
 export const HookActionSchema = z.discriminatedUnion("type", [
