@@ -21,6 +21,7 @@ import { resolveAndValidateImages, buildImagePromptSection } from "./images.js";
 import { stateManager } from "./state.js";
 import { markTicketCompleteInFile } from "./tickets-io.js";
 import { claude, getLastRateLimitResetsAt, clearRateLimitResetsAt } from "./claude.js";
+import type { AgentProvider } from "./types/agent-provider.js";
 import { hookExecutor, type HookContext } from "./hooks.js";
 import type { Multiplexer } from "../messaging/multiplexer.js";
 import { logger } from "../utils/logger.js";
@@ -39,6 +40,7 @@ export interface OrchestratorOptions {
   projectRoot: string;
   ticketsFile: string;
   multiplexer: Multiplexer;
+  provider?: AgentProvider;
   dryRun?: boolean;
   verbose?: boolean;
 }
@@ -112,6 +114,7 @@ class OrchestratorImpl
   private readonly projectRoot: string;
   private readonly ticketsFilePath: string;
   private readonly multiplexer: Multiplexer;
+  private readonly provider: AgentProvider;
   private readonly dryRun: boolean;
   private readonly verbose: boolean;
 
@@ -132,6 +135,7 @@ class OrchestratorImpl
     this.projectRoot = options.projectRoot;
     this.ticketsFilePath = options.ticketsFile;
     this.multiplexer = options.multiplexer;
+    this.provider = options.provider ?? claude;
     this.dryRun = options.dryRun ?? false;
     this.verbose = options.verbose ?? false;
   }
@@ -235,7 +239,7 @@ class OrchestratorImpl
     this.stopRequested = true;
     this.pauseRequested = true;
 
-    claude.abort();
+    this.provider.abort();
 
     if (this.state) {
       await stateManager.update(this.projectRoot, { pauseRequested: true });
@@ -875,7 +879,7 @@ class OrchestratorImpl
     const fallbackModel = config.fallbackModel;
 
     // First attempt with current model
-    let result = await claude.generatePlan(prompt, {
+    let result = await this.provider.generatePlan(prompt, {
       model: currentModel,
       timeout: config.timeouts.planGeneration,
       cwd: ticketCwd,
@@ -896,7 +900,7 @@ class OrchestratorImpl
       });
 
       // Retry with fallback model
-      result = await claude.generatePlan(prompt, {
+      result = await this.provider.generatePlan(prompt, {
         model: fallbackModel,
         timeout: config.timeouts.planGeneration,
         cwd: ticketCwd,
@@ -939,7 +943,7 @@ class OrchestratorImpl
         clearRateLimitResetsAt();
 
         if (delayCompleted) {
-          result = await claude.generatePlan(prompt, {
+          result = await this.provider.generatePlan(prompt, {
             model: fallbackModel,
             timeout: config.timeouts.planGeneration,
             cwd: ticketCwd,
@@ -1045,7 +1049,7 @@ class OrchestratorImpl
 
     while (retries <= maxRetries) {
       try {
-        const result = await claude.execute(
+        const result = await this.provider.execute(
           prompt,
           {
             model: config.model,
@@ -1073,7 +1077,7 @@ class OrchestratorImpl
           });
 
           // Retry with fallback model
-          const fallbackResult = await claude.execute(
+          const fallbackResult = await this.provider.execute(
             prompt,
             {
               model: config.fallbackModel,
@@ -1120,7 +1124,7 @@ class OrchestratorImpl
             const retryResult = await this.handleRateLimitWithRetry(
               ticket.id,
               config,
-              () => claude.execute(prompt, {
+              () => this.provider.execute(prompt, {
                 model: config.fallbackModel,
                 skipPermissions: isAutonomous || config.skipPermissions,
                 timeout: config.timeouts.execution,
@@ -1239,7 +1243,7 @@ class OrchestratorImpl
     const currentModel = config.model;
     const fallbackModel = config.fallbackModel;
 
-    let result = await claude.resume(
+    let result = await this.provider.resume(
       sessionId,
       resumePrompt ?? "Continue from where you left off.",
       {
@@ -1268,7 +1272,7 @@ class OrchestratorImpl
         fallbackModel,
       });
 
-      result = await claude.resume(
+      result = await this.provider.resume(
         sessionId,
         resumePrompt ?? "Continue from where you left off.",
         {
@@ -1320,7 +1324,7 @@ class OrchestratorImpl
         clearRateLimitResetsAt();
 
         if (delayCompleted) {
-          result = await claude.resume(
+          result = await this.provider.resume(
             sessionId,
             resumePrompt ?? "Continue from where you left off.",
             {
@@ -1455,7 +1459,7 @@ class OrchestratorImpl
         let conditionResult: ConditionResult;
         try {
           const claudeRunner = async (prompt: string) => {
-            const result = await claude.runPrompt(prompt, {
+            const result = await this.provider.runPrompt(prompt, {
               model: config.model,
               cwd: effectiveCwd,
               timeout: 300000,
@@ -1732,7 +1736,7 @@ class OrchestratorImpl
       const currentModel = config?.model;
       const fallbackModel = config?.fallbackModel ?? "sonnet";
 
-      let result = await claude.runPrompt(prompt, {
+      let result = await this.provider.runPrompt(prompt, {
         model: currentModel,
         cwd: this.projectRoot,
         timeout: 300000,
@@ -1756,7 +1760,7 @@ class OrchestratorImpl
           fallbackModel,
         });
 
-        result = await claude.runPrompt(prompt, {
+        result = await this.provider.runPrompt(prompt, {
           model: fallbackModel,
           cwd: this.projectRoot,
           timeout: 300000,
@@ -1800,7 +1804,7 @@ class OrchestratorImpl
           clearRateLimitResetsAt();
 
           if (delayCompleted) {
-            result = await claude.runPrompt(prompt, {
+            result = await this.provider.runPrompt(prompt, {
               model: fallbackModel,
               cwd: this.projectRoot,
               timeout: 300000,
