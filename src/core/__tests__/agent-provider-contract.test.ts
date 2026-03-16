@@ -126,8 +126,7 @@ describe("AgentProvider interface contract", () => {
 });
 
 describe("createProvider factory", () => {
-  it.skip("createProvider('claude') returns an object satisfying AgentProvider", async () => {
-    // Enable after providers/index.ts is created
+  it("createProvider('claude') returns an object satisfying AgentProvider", async () => {
     const { createProvider } = await import("../providers/index.js");
     const provider = createProvider("claude");
 
@@ -141,8 +140,7 @@ describe("createProvider factory", () => {
     expect(typeof provider.clearRateLimitResetsAt).toBe("function");
   });
 
-  it.skip("createProvider('unknown') throws an error", async () => {
-    // Enable after providers/index.ts is created
+  it("createProvider('unknown') throws an error", async () => {
     const { createProvider } = await import("../providers/index.js");
 
     expect(() => createProvider("unknown")).toThrow();
@@ -150,8 +148,7 @@ describe("createProvider factory", () => {
 });
 
 describe("ClaudeProvider contract", () => {
-  it.skip("ClaudeProvider implements AgentProvider", async () => {
-    // Enable after providers/claude.ts is created
+  it("ClaudeProvider implements AgentProvider", async () => {
     const { ClaudeProvider } = await import("../providers/claude.js");
     const provider: AgentProvider = new ClaudeProvider();
 
@@ -165,16 +162,14 @@ describe("ClaudeProvider contract", () => {
     expect(typeof provider.clearRateLimitResetsAt).toBe("function");
   });
 
-  it.skip("getRateLimitResetsAt returns null initially", async () => {
-    // Enable after providers/claude.ts is created
+  it("getRateLimitResetsAt returns null initially", async () => {
     const { ClaudeProvider } = await import("../providers/claude.js");
     const provider = new ClaudeProvider();
 
     expect(provider.getRateLimitResetsAt()).toBeNull();
   });
 
-  it.skip("clearRateLimitResetsAt resets to null after state change", async () => {
-    // Enable after providers/claude.ts is created
+  it("clearRateLimitResetsAt resets to null after state change", async () => {
     const { ClaudeProvider } = await import("../providers/claude.js");
     const provider = new ClaudeProvider();
 
@@ -185,8 +180,7 @@ describe("ClaudeProvider contract", () => {
 });
 
 describe("Claude provider metadata", () => {
-  it.skip("has name 'claude' and supportedModels containing sonnet, opus, haiku", async () => {
-    // Enable after providers/claude.ts is created
+  it("has name 'claude' and supportedModels containing sonnet, opus, haiku", async () => {
     const { ClaudeProvider } = await import("../providers/claude.js");
     const provider = new ClaudeProvider();
     const metadata: AgentProviderMetadata =
