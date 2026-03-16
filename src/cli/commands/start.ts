@@ -15,7 +15,7 @@ import { createTerminalProvider } from '../../messaging/terminal.js';
 import { fileExists } from '../../utils/fs.js';
 import { logger } from '../../utils/logger.js';
 import { checkStalePid, writePidFile, removePidFile } from '../../utils/pid.js';
-import { getSessionLogReport, reportSessionLogSize } from '../../utils/session-report.js';
+import { getSessionLogReport, reportSessionLogSize, runStartupCleanup } from '../../utils/session-report.js';
 import { getMemorySnapshot } from '../../utils/memory-monitor.js';
 import { processRegistry } from '../../utils/process-lifecycle.js';
 
@@ -165,6 +165,7 @@ function setupShutdownHandler(orchestrator: Orchestrator, pidPath: string): void
     if (shuttingDown) {
       console.log(chalk.yellow('\nForce quitting...'));
       await processRegistry.killAll();
+      await logger.disableFileLogging();
       process.exit(1);
     }
 
@@ -175,12 +176,14 @@ function setupShutdownHandler(orchestrator: Orchestrator, pidPath: string): void
       await orchestrator.stop();
       await processRegistry.killAll();
       removePidFile(pidPath);
+      await logger.disableFileLogging();
       console.log(chalk.green('Stopped. Resume with: planbot resume'));
       process.exit(0);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       console.error(chalk.red(`Error during shutdown: ${message}`));
       await processRegistry.killAll();
+      await logger.disableFileLogging();
       process.exit(1);
     }
   };
@@ -274,6 +277,10 @@ export function createStartCommand(): Command {
 
         // Enable file logging
         logger.enableFileLogging(stateManager.getPaths(cwd).logs);
+        logger.cleanupLogs().catch(() => {});
+
+        // Run startup cleanup (non-blocking)
+        runStartupCleanup(config.sessionCleanup).catch(() => {});
 
         // PID file guard
         const pidPath = stateManager.getPaths(cwd).pid;
@@ -283,6 +290,12 @@ export function createStartCommand(): Command {
           process.exit(1);
         }
         writePidFile(pidPath);
+
+        // Crash recovery detection
+        const crashRecovered = await stateManager.recoverFromCrash(cwd);
+        if (crashRecovered) {
+          logger.info('Recovered from previous crash — pauseRequested reset');
+        }
 
         // Create terminal provider for approvals and questions
         const terminal = createTerminalProvider({
@@ -339,6 +352,20 @@ export function createStartCommand(): Command {
         setupShutdownHandler(orchestrator, pidPath);
 
         spinner.succeed('Ready to process tickets');
+
+        // Startup disk space check
+        try {
+          const { getDiskSnapshot } = await import('../../utils/memory-monitor.js');
+          const disk = await getDiskSnapshot(cwd);
+          if (disk.availableMb < 500) {
+            console.error(chalk.red(`\nInsufficient disk space: ${disk.availableMb.toFixed(0)}MB available (minimum: 500MB)`));
+            removePidFile(pidPath);
+            process.exit(1);
+          }
+        } catch {
+          // Non-fatal: disk check may not work on all platforms
+        }
+
         const memSnap = getMemorySnapshot();
         logger.info('Startup memory', { rssMb: memSnap.rssMb.toFixed(1), heapUsedMb: memSnap.heapUsedMb.toFixed(1) });
         getSessionLogReport().then(r => reportSessionLogSize(r)).catch(() => {});

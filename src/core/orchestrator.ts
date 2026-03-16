@@ -27,7 +27,7 @@ import { logger } from "../utils/logger.js";
 import { cleanupSessionLogs } from "../utils/session-report.js";
 import { isRateLimitError, shouldFallback, calculateRateLimitWait } from "./rate-limit-detection.js";
 import { evaluateCondition, type ConditionResult } from "./loop-condition.js";
-import { createMemoryMonitor, getMemorySnapshot, type MemoryMonitor } from "../utils/memory-monitor.js";
+import { createMemoryMonitor, getMemorySnapshot, getDiskSnapshot, type MemoryMonitor } from "../utils/memory-monitor.js";
 import { interruptibleDelay } from "../utils/interruptible-delay.js";
 import { formatDuration } from "../utils/duration.js";
 
@@ -470,6 +470,24 @@ class OrchestratorImpl
         break;
       }
 
+      // Disk space check
+      if (config.diskFloorMb > 0) {
+        try {
+          const disk = await getDiskSnapshot(this.projectRoot);
+          if (disk.availableMb < config.diskFloorMb) {
+            logger.warn('Disk space below floor, pausing queue', {
+              availableMb: disk.availableMb.toFixed(0),
+              floorMb: config.diskFloorMb,
+            });
+            break;
+          }
+        } catch (err) {
+          logger.warn('Disk space check failed', {
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+
       // Per-ticket pacing checks
       const ticketPacing = this.resolvePacing(ticket, config);
       if (ticketPacing.startAfter) {
@@ -520,6 +538,20 @@ class OrchestratorImpl
             this.pauseRequested = true;
             break;
           }
+        }
+      }
+
+      // Clean session logs between tickets if configured
+      if (config.sessionCleanup.enabled) {
+        try {
+          await cleanupSessionLogs({
+            maxSizeMb: config.sessionCleanup.maxSizeMb,
+            maxAgeDays: config.sessionCleanup.maxAgeDays,
+          });
+        } catch (err) {
+          logger.warn('Inter-ticket session cleanup failed', {
+            error: err instanceof Error ? err.message : String(err),
+          });
         }
       }
     }
