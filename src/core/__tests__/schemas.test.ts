@@ -23,6 +23,7 @@ import {
   ImagePathSchema,
   SUPPORTED_IMAGE_EXTENSIONS,
   MAX_IMAGES_PER_TICKET,
+  ProviderSchema,
 } from "../schemas.js";
 
 // =============================================================================
@@ -759,5 +760,84 @@ describe("TicketSchema images field", () => {
       images: ["../bad/path.png"],
     });
     expect(result.success).toBe(false);
+  });
+});
+
+// =============================================================================
+// Provider Schema Tests
+// =============================================================================
+
+describe("ProviderSchema", () => {
+  it("defaults provider to claude when config omits provider field", () => {
+    const result = ConfigSchema.parse({});
+
+    expect(result.provider).toBe("claude");
+  });
+
+  it("accepts explicit provider claude", () => {
+    const result = ConfigSchema.safeParse({ provider: "claude" });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.provider).toBe("claude");
+    }
+  });
+
+  it("rejects invalid provider value", () => {
+    const result = ConfigSchema.safeParse({ provider: "invalid" });
+
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects unsupported provider codex", () => {
+    const result = ConfigSchema.safeParse({ provider: "codex" });
+
+    expect(result.success).toBe(false);
+  });
+
+  it("validates ProviderSchema enum directly", () => {
+    expect(ProviderSchema.safeParse("claude").success).toBe(true);
+    expect(ProviderSchema.safeParse("invalid").success).toBe(false);
+    expect(ProviderSchema.safeParse("").success).toBe(false);
+  });
+
+  it("accepts all model values alongside provider field", () => {
+    const models = ["sonnet", "opus", "haiku"] as const;
+
+    for (const model of models) {
+      const result = ConfigSchema.safeParse({ provider: "claude", model });
+
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.provider).toBe("claude");
+        expect(result.data.model).toBe(model);
+      }
+    }
+  });
+
+  it("parses full tickets file with provider field", () => {
+    const input = {
+      config: {
+        provider: "claude",
+        model: "sonnet",
+        maxBudgetPerTicket: 5,
+      },
+      tickets: [
+        {
+          id: "TICKET-001",
+          title: "Test ticket",
+          description: "Test description",
+        },
+      ],
+    };
+
+    const result = safeParseTicketsFile(input);
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.config.provider).toBe("claude");
+      expect(result.data.config.model).toBe("sonnet");
+      expect(result.data.tickets).toHaveLength(1);
+    }
   });
 });
