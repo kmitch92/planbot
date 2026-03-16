@@ -402,13 +402,7 @@ export class ClaudeProvider implements AgentProvider {
    */
   async runPrompt(
     prompt: string,
-    options: {
-      model?: string;
-      cwd?: string;
-      timeout?: number;
-      skipPermissions?: boolean;
-      verbose?: boolean;
-    } = {}
+    options: Omit<ProviderOptions, 'sessionId'> = {}
   ): Promise<PromptResult> {
     const { model, cwd, timeout = 300000, skipPermissions, verbose } = options;
     const startTime = Date.now();

@@ -81,6 +81,9 @@ export interface AgentProviderMetadata {
 
 /** Provider-agnostic interface for AI agent interactions. */
 export interface AgentProvider {
+  /** Static metadata about this provider. */
+  readonly metadata: AgentProviderMetadata;
+
   /** Generate a plan from a prompt. */
   generatePlan(
     prompt: string,
@@ -112,13 +115,7 @@ export interface AgentProvider {
   /** Run a one-shot prompt and return the result. */
   runPrompt(
     prompt: string,
-    options?: {
-      model?: string;
-      cwd?: string;
-      timeout?: number;
-      skipPermissions?: boolean;
-      verbose?: boolean;
-    },
+    options?: Omit<ProviderOptions, 'sessionId'>,
   ): Promise<PromptResult>;
 
   /** Get the timestamp when the current rate limit resets, or null if not rate-limited. */
