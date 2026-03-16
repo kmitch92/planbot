@@ -225,8 +225,12 @@ export const LoopConfigSchema = z.object({
 
 export const ModelSchema = z.enum(["sonnet", "opus", "haiku"]);
 
+export const ProviderSchema = z.enum(["claude"]);
+
 export const ConfigSchema = z.object({
-  /** Claude model override — omit to use your Claude CLI default */
+  /** Agent provider to use for ticket execution (default: "claude") */
+  provider: ProviderSchema.default("claude"),
+  /** Model override — omit to use your Claude CLI default */
   model: ModelSchema.optional(),
   /** Fallback model to use when rate limits are hit */
   fallbackModel: ModelSchema.default("sonnet"),
@@ -440,6 +444,7 @@ export type Hook = z.infer<typeof HookSchema>;
 export type Hooks = z.infer<typeof HooksSchema>;
 
 export type Model = z.infer<typeof ModelSchema>;
+export type Provider = z.infer<typeof ProviderSchema>;
 export type Config = z.infer<typeof ConfigSchema>;
 
 export type TicketStatus = z.infer<typeof TicketStatusSchema>;
