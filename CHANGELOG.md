@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Multi-provider architecture**: `AgentProvider` interface for pluggable AI coding agent backends — any provider implementing the interface can replace Claude
+- Provider registry with `createProvider(name)` factory function (`src/core/providers/index.ts`)
+- `provider` config field in `tickets.yaml` (default: `"claude"`, currently only supported value)
+- `AgentProviderMetadata` type for provider self-description (`name`, `supportedModels`)
+
+### Changed
+
+- Claude CLI wrapper extracted to `src/core/providers/claude.ts` as `ClaudeProvider` class
+- `src/core/claude.ts` reduced to a backward-compatible re-export shim (~30 lines)
+- Orchestrator accepts optional `provider` in `OrchestratorOptions` (defaults to Claude singleton)
+- Rate limit state (`resetsAt`) is now per-provider instance instead of module-level
+
 - **Rate Limit Wait-and-Retry**: Opt-in feature (`config.rateLimitRetry.enabled: true`) that waits for Claude session/usage limits to reset instead of failing. When both primary and fallback models are rate-limited, planbot captures the `resetsAt` timestamp from Claude CLI's `rate_limit_event` and waits before retrying.
   - `maxWaitTime`: Maximum wait duration per reset cycle (default: `6h`)
   - `retryBuffer`: Buffer added after reset time before retry (default: `30s`)
