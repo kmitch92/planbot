@@ -30,6 +30,24 @@ export function getMemorySnapshot(): MemorySnapshot {
   };
 }
 
+export interface DiskSnapshot {
+  availableMb: number;
+  totalMb: number;
+  usedPercent: number;
+  path: string;
+}
+
+export async function getDiskSnapshot(path: string): Promise<DiskSnapshot> {
+  const { statfs } = await import('node:fs/promises');
+  const stats = await statfs(path);
+  const totalBytes = stats.blocks * stats.bsize;
+  const availableBytes = stats.bavail * stats.bsize;
+  const totalMb = totalBytes / (1024 * 1024);
+  const availableMb = availableBytes / (1024 * 1024);
+  const usedPercent = totalMb > 0 ? ((totalMb - availableMb) / totalMb) * 100 : 0;
+  return { availableMb, totalMb, usedPercent, path };
+}
+
 export interface MemoryMonitor {
   start(
     intervalSec: number,

@@ -1,5 +1,6 @@
 import chalk from 'chalk';
 import { createWriteStream, mkdirSync, type WriteStream } from 'node:fs';
+import { readdir, stat, unlink, utimes } from 'node:fs/promises';
 import { join } from 'node:path';
 
 /**
@@ -292,6 +293,93 @@ class Logger {
     const output = `${timestamp} ${securityLabel} ${message}${contextStr}`;
     console.warn(output);
     this.writeToFile('audit', message, meta);
+  }
+
+  /**
+   * Clean up old log files in the log directory.
+   * Phase 1: delete files older than maxAgeDays.
+   * Phase 2: if total size exceeds maxSizeMb, delete oldest first (skip today's file).
+   */
+  async cleanupLogs(options?: { maxAgeDays?: number; maxSizeMb?: number }): Promise<{ deletedFiles: number; freedBytes: number }> {
+    const { maxAgeDays = 7, maxSizeMb = 50 } = options ?? {};
+
+    if (!this.logDir) {
+      return { deletedFiles: 0, freedBytes: 0 };
+    }
+
+    const today = new Date().toISOString().slice(0, 10);
+    const todayFilename = `planbot-${today}.log`;
+    const maxAgeMs = maxAgeDays * 24 * 60 * 60 * 1000;
+    const now = Date.now();
+
+    let entries: string[];
+    try {
+      entries = (await readdir(this.logDir)).filter(f => f.startsWith('planbot-') && f.endsWith('.log'));
+    } catch {
+      return { deletedFiles: 0, freedBytes: 0 };
+    }
+
+    interface LogFile {
+      name: string;
+      path: string;
+      size: number;
+      mtimeMs: number;
+    }
+
+    const files: LogFile[] = [];
+    for (const name of entries) {
+      const path = join(this.logDir, name);
+      try {
+        const s = await stat(path);
+        files.push({ name, path, size: s.size, mtimeMs: s.mtimeMs });
+      } catch {
+        continue;
+      }
+    }
+
+    let deletedFiles = 0;
+    let freedBytes = 0;
+    const deletedPaths = new Set<string>();
+
+    // Phase 1: delete files older than maxAgeDays (skip today's file)
+    for (const file of files) {
+      if (file.name === todayFilename) continue;
+      if (now - file.mtimeMs > maxAgeMs) {
+        try {
+          await unlink(file.path);
+          deletedFiles++;
+          freedBytes += file.size;
+          deletedPaths.add(file.path);
+        } catch {
+          continue;
+        }
+      }
+    }
+
+    // Phase 2: if total remaining size > maxSizeMb, delete oldest first
+    const remaining = files
+      .filter(f => !deletedPaths.has(f.path) && f.name !== todayFilename)
+      .sort((a, b) => a.mtimeMs - b.mtimeMs);
+
+    let totalBytes = files
+      .filter(f => !deletedPaths.has(f.path))
+      .reduce((sum, f) => sum + f.size, 0);
+
+    const maxBytes = maxSizeMb * 1024 * 1024;
+
+    for (const file of remaining) {
+      if (totalBytes <= maxBytes) break;
+      try {
+        await unlink(file.path);
+        deletedFiles++;
+        freedBytes += file.size;
+        totalBytes -= file.size;
+      } catch {
+        continue;
+      }
+    }
+
+    return { deletedFiles, freedBytes };
   }
 }
 

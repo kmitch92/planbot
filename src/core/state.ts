@@ -123,6 +123,9 @@ export interface StateManager {
   /** Load session ID for a ticket */
   loadSession(projectRoot: string, ticketId: string): Promise<string | null>;
 
+  /** Detect and recover from crash state (non-idle phase with no running process) */
+  recoverFromCrash(projectRoot: string): Promise<boolean>;
+
   /** Clear all state (reset) */
   clear(projectRoot: string): Promise<void>;
 
@@ -305,6 +308,26 @@ function createStateManager(): StateManager {
       const sessionId = (await readTextFile(sessionPath)).trim();
       logger.debug('Session loaded', { ticketId });
       return sessionId;
+    },
+
+    async recoverFromCrash(projectRoot: string): Promise<boolean> {
+      const state = await this.load(projectRoot);
+
+      if (state.currentPhase === 'idle') {
+        return false;
+      }
+
+      // Phase is not idle — previous process died mid-work
+      logger.warn('Crash recovery: detected non-idle state from previous run', {
+        phase: state.currentPhase,
+        ticketId: state.currentTicketId,
+        lastUpdatedAt: state.lastUpdatedAt,
+      });
+
+      // Reset pauseRequested so resume can proceed
+      await this.update(projectRoot, { pauseRequested: false });
+
+      return true;
     },
 
     async clear(projectRoot: string): Promise<void> {

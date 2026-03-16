@@ -265,6 +265,8 @@ export const ConfigSchema = z.object({
   memoryCeilingMb: z.number().int().nonnegative().default(1024),
   /** How often to check memory in seconds (default: 30) */
   memoryCheckIntervalSec: z.number().int().positive().default(30),
+  /** Minimum free disk space in MB. When available space drops below this, queue pauses. 0 = disabled (default: 500). */
+  diskFloorMb: z.number().int().nonnegative().default(500),
 });
 
 // =============================================================================
