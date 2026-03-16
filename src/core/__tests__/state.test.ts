@@ -500,4 +500,142 @@ describe("StateManager", () => {
       expect(exists).toBe(true);
     });
   });
+
+  // ===========================================================================
+  // Crash Recovery (~6 tests)
+  // ===========================================================================
+
+  describe("recoverFromCrash", () => {
+    it("returns false when state phase is idle", async () => {
+      await stateManager.init(testDir);
+
+      const state = await stateManager.load(testDir);
+      expect(state.currentPhase).toBe("idle");
+
+      const recovered = await stateManager.recoverFromCrash(testDir);
+
+      expect(recovered).toBe(false);
+    });
+
+    it("returns true and resets pauseRequested when phase is executing", async () => {
+      await stateManager.init(testDir);
+
+      const crashedState: State = {
+        version: "1.0.0",
+        currentTicketId: "TICKET-CRASH-1",
+        currentPhase: "executing",
+        sessionId: "session-crash",
+        pauseRequested: true,
+        startedAt: "2024-01-01T00:00:00.000Z",
+        lastUpdatedAt: "2024-01-01T12:00:00.000Z",
+        pendingQuestions: [],
+        loopState: null,
+      };
+
+      const paths = stateManager.getPaths(testDir);
+      await writeFile(paths.state, JSON.stringify(crashedState, null, 2));
+
+      const recovered = await stateManager.recoverFromCrash(testDir);
+
+      expect(recovered).toBe(true);
+
+      const state = await stateManager.load(testDir);
+      expect(state.pauseRequested).toBe(false);
+    });
+
+    it("returns true and resets pauseRequested when phase is planning", async () => {
+      await stateManager.init(testDir);
+
+      const crashedState: State = {
+        version: "1.0.0",
+        currentTicketId: "TICKET-CRASH-2",
+        currentPhase: "planning",
+        sessionId: "session-plan",
+        pauseRequested: true,
+        startedAt: "2024-01-01T00:00:00.000Z",
+        lastUpdatedAt: "2024-01-01T12:00:00.000Z",
+        pendingQuestions: [],
+        loopState: null,
+      };
+
+      const paths = stateManager.getPaths(testDir);
+      await writeFile(paths.state, JSON.stringify(crashedState, null, 2));
+
+      const recovered = await stateManager.recoverFromCrash(testDir);
+
+      expect(recovered).toBe(true);
+
+      const state = await stateManager.load(testDir);
+      expect(state.pauseRequested).toBe(false);
+    });
+
+    it("returns true and resets pauseRequested when phase is awaiting_approval", async () => {
+      await stateManager.init(testDir);
+
+      const crashedState: State = {
+        version: "1.0.0",
+        currentTicketId: "TICKET-CRASH-3",
+        currentPhase: "awaiting_approval",
+        sessionId: "session-approval",
+        pauseRequested: true,
+        startedAt: "2024-01-01T00:00:00.000Z",
+        lastUpdatedAt: "2024-01-01T12:00:00.000Z",
+        pendingQuestions: [],
+        loopState: null,
+      };
+
+      const paths = stateManager.getPaths(testDir);
+      await writeFile(paths.state, JSON.stringify(crashedState, null, 2));
+
+      const recovered = await stateManager.recoverFromCrash(testDir);
+
+      expect(recovered).toBe(true);
+
+      const state = await stateManager.load(testDir);
+      expect(state.pauseRequested).toBe(false);
+    });
+
+    it("preserves other state fields during recovery", async () => {
+      await stateManager.init(testDir);
+
+      const loopState = {
+        currentIteration: 3,
+        maxIterations: 10,
+        conditionMet: false,
+      };
+
+      const crashedState: State = {
+        version: "1.0.0",
+        currentTicketId: "TICKET-PRESERVE",
+        currentPhase: "executing",
+        sessionId: "session-preserve",
+        pauseRequested: true,
+        startedAt: "2024-01-01T00:00:00.000Z",
+        lastUpdatedAt: "2024-01-01T12:00:00.000Z",
+        pendingQuestions: [],
+        loopState,
+      };
+
+      const paths = stateManager.getPaths(testDir);
+      await writeFile(paths.state, JSON.stringify(crashedState, null, 2));
+
+      await stateManager.recoverFromCrash(testDir);
+
+      const state = await stateManager.load(testDir);
+      expect(state.currentTicketId).toBe("TICKET-PRESERVE");
+      expect(state.sessionId).toBe("session-preserve");
+      expect(state.currentPhase).toBe("executing");
+      expect(state.loopState).toEqual(loopState);
+      expect(state.pauseRequested).toBe(false);
+    });
+
+    it("returns false when .planbot directory does not exist", async () => {
+      const recovered = await stateManager.recoverFromCrash(testDir);
+
+      expect(recovered).toBe(false);
+
+      const state = await stateManager.load(testDir);
+      expect(state.currentPhase).toBe("idle");
+    });
+  });
 });

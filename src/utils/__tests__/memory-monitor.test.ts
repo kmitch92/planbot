@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { getMemorySnapshot, createMemoryMonitor } from '../memory-monitor.js';
+import { getMemorySnapshot, createMemoryMonitor, getDiskSnapshot } from '../memory-monitor.js';
 
 describe('getMemorySnapshot', () => {
   it('returns valid positive MB values', () => {
@@ -17,6 +17,37 @@ describe('getMemorySnapshot', () => {
     expect(typeof snapshot.timestamp).toBe('string');
     const parsed = new Date(snapshot.timestamp);
     expect(parsed.toISOString()).toBe(snapshot.timestamp);
+  });
+});
+
+describe('getDiskSnapshot', () => {
+  it('returns disk stats with expected shape', async () => {
+    const snapshot = await getDiskSnapshot('/');
+
+    expect(typeof snapshot.availableMb).toBe('number');
+    expect(typeof snapshot.totalMb).toBe('number');
+    expect(typeof snapshot.usedPercent).toBe('number');
+    expect(typeof snapshot.path).toBe('string');
+  });
+
+  it('availableMb and totalMb are positive numbers', async () => {
+    const snapshot = await getDiskSnapshot('/');
+
+    expect(snapshot.availableMb).toBeGreaterThan(0);
+    expect(snapshot.totalMb).toBeGreaterThan(0);
+  });
+
+  it('usedPercent is between 0 and 100', async () => {
+    const snapshot = await getDiskSnapshot('/');
+
+    expect(snapshot.usedPercent).toBeGreaterThanOrEqual(0);
+    expect(snapshot.usedPercent).toBeLessThanOrEqual(100);
+  });
+
+  it('returns the path that was passed in', async () => {
+    const snapshot = await getDiskSnapshot('/tmp');
+
+    expect(snapshot.path).toBe('/tmp');
   });
 });
 
