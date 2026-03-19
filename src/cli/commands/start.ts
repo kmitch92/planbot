@@ -1,23 +1,41 @@
-import { Command } from 'commander';
-import chalk from 'chalk';
-import ora from 'ora';
-import { resolve } from 'node:path';
-import { readFile } from 'node:fs/promises';
-import { parse as parseYaml } from 'yaml';
-import { randomBytes } from 'node:crypto';
+import { Command } from "commander";
+import chalk from "chalk";
+import ora from "ora";
+import { resolve } from "node:path";
+import { readFile } from "node:fs/promises";
+import { parse as parseYaml } from "yaml";
+import { randomBytes } from "node:crypto";
 
-import { createOrchestrator, type Orchestrator } from '../../core/orchestrator.js';
-import { stateManager } from '../../core/state.js';
-import { parseTicketsFile, validateTicketDependencies, resolveEnvVars } from '../../core/schemas.js';
-import type { Ticket } from '../../core/schemas.js';
-import { createMultiplexer, TimeoutError, createTelegramProvider } from '../../messaging/index.js';
-import { createTerminalProvider } from '../../messaging/terminal.js';
-import { fileExists } from '../../utils/fs.js';
-import { logger } from '../../utils/logger.js';
-import { checkStalePid, writePidFile, removePidFile } from '../../utils/pid.js';
-import { getSessionLogReport, reportSessionLogSize, runStartupCleanup } from '../../utils/session-report.js';
-import { getMemorySnapshot } from '../../utils/memory-monitor.js';
-import { processRegistry } from '../../utils/process-lifecycle.js';
+import {
+  createOrchestrator,
+  type Orchestrator,
+} from "../../core/orchestrator.js";
+import { stateManager } from "../../core/state.js";
+import {
+  parseTicketsFile,
+  validateTicketDependencies,
+  resolveEnvVars,
+} from "../../core/schemas.js";
+import { claude } from "../../core/claude.js";
+import { opencode } from "../../core/opencode.js";
+import type { AgentProvider } from "../../core/agent-provider.js";
+import type { Ticket } from "../../core/schemas.js";
+import {
+  createMultiplexer,
+  TimeoutError,
+  createTelegramProvider,
+} from "../../messaging/index.js";
+import { createTerminalProvider } from "../../messaging/terminal.js";
+import { fileExists } from "../../utils/fs.js";
+import { logger } from "../../utils/logger.js";
+import { checkStalePid, writePidFile, removePidFile } from "../../utils/pid.js";
+import {
+  getSessionLogReport,
+  reportSessionLogSize,
+  runStartupCleanup,
+} from "../../utils/session-report.js";
+import { getMemorySnapshot } from "../../utils/memory-monitor.js";
+import { processRegistry } from "../../utils/process-lifecycle.js";
 
 // =============================================================================
 // Types
@@ -38,23 +56,23 @@ interface StartOptions {
 // Continuous Mode Helpers
 // =============================================================================
 
-const EXIT_COMMANDS = new Set(['exit', 'quit', 'q', 'done', 'stop']);
+const EXIT_COMMANDS = new Set(["exit", "quit", "q", "done", "stop"]);
 
 export function isExitCommand(input: string): boolean {
   return EXIT_COMMANDS.has(input.trim().toLowerCase());
 }
 
 export function generateContinuousTicketId(): string {
-  return `cont-${Date.now()}-${randomBytes(4).toString('hex')}`;
+  return `cont-${Date.now()}-${randomBytes(4).toString("hex")}`;
 }
 
 export function parseUserInputToTicket(input: string): Ticket | null {
   // Normalize CRLF to LF
-  const normalized = input.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  const normalized = input.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
   const trimmed = normalized.trim();
   if (!trimmed) return null;
 
-  const firstNewline = trimmed.indexOf('\n');
+  const firstNewline = trimmed.indexOf("\n");
   let title: string;
   let description: string;
 
@@ -73,17 +91,17 @@ export function parseUserInputToTicket(input: string): Ticket | null {
     title,
     description,
     priority: 0,
-    status: 'pending' as const,
+    status: "pending" as const,
     complete: false,
   };
 }
 
 function displayCompletionSummary(tickets: Ticket[]): void {
-  const completed = tickets.filter(t => t.status === 'completed').length;
-  const failed = tickets.filter(t => t.status === 'failed').length;
-  const skipped = tickets.filter(t => t.status === 'skipped').length;
+  const completed = tickets.filter((t) => t.status === "completed").length;
+  const failed = tickets.filter((t) => t.status === "failed").length;
+  const skipped = tickets.filter((t) => t.status === "skipped").length;
 
-  console.log(chalk.bold('\nQueue Summary:'));
+  console.log(chalk.bold("\nQueue Summary:"));
   console.log(chalk.green(`  Completed: ${completed}`));
   if (failed > 0) console.log(chalk.red(`  Failed:    ${failed}`));
   if (skipped > 0) console.log(chalk.yellow(`  Skipped:   ${skipped}`));
@@ -92,7 +110,7 @@ function displayCompletionSummary(tickets: Ticket[]): void {
 async function runContinuousLoop(
   orchestrator: Orchestrator,
   multiplexer: ReturnType<typeof createMultiplexer>,
-  _timeout: number
+  _timeout: number,
 ): Promise<void> {
   // Note: timeout parameter reserved for future per-question timeout support
   // Currently uses multiplexer's configured questionTimeout
@@ -101,30 +119,34 @@ async function runContinuousLoop(
 
   while (true) {
     displayCompletionSummary(orchestrator.getTickets());
-    console.log(chalk.cyan('\n--- Continuous Mode ---'));
+    console.log(chalk.cyan("\n--- Continuous Mode ---"));
 
     try {
       const response = await multiplexer.askQuestion({
         questionId: `continuous-${Date.now()}`,
-        ticketId: 'continuous-mode',
-        ticketTitle: 'Continuous Mode',
+        ticketId: "continuous-mode",
+        ticketTitle: "Continuous Mode",
         question: 'Enter your next plan (or "exit" to quit):',
       });
 
       const answer = response.answer.trim();
 
       if (isExitCommand(answer)) {
-        console.log(chalk.green('\nExiting continuous mode.'));
+        console.log(chalk.green("\nExiting continuous mode."));
         break;
       }
 
       if (!answer) {
         emptyInputCount++;
         if (emptyInputCount >= maxEmptyInputs) {
-          console.log(chalk.yellow('\nNo input received. Exiting.'));
+          console.log(chalk.yellow("\nNo input received. Exiting."));
           break;
         }
-        console.log(chalk.yellow(`Enter a plan or 'exit' (${maxEmptyInputs - emptyInputCount} attempts left)`));
+        console.log(
+          chalk.yellow(
+            `Enter a plan or 'exit' (${maxEmptyInputs - emptyInputCount} attempts left)`,
+          ),
+        );
         continue;
       }
 
@@ -132,7 +154,7 @@ async function runContinuousLoop(
 
       const ticket = parseUserInputToTicket(response.answer);
       if (!ticket) {
-        console.log(chalk.yellow('Could not parse input. Try again.'));
+        console.log(chalk.yellow("Could not parse input. Try again."));
         continue;
       }
 
@@ -141,10 +163,9 @@ async function runContinuousLoop(
 
       await orchestrator.queueTicket(ticket);
       await orchestrator.start();
-
     } catch (err) {
       if (err instanceof TimeoutError) {
-        console.log(chalk.yellow('\nTimeout waiting for input. Exiting.'));
+        console.log(chalk.yellow("\nTimeout waiting for input. Exiting."));
         break;
       }
       throw err;
@@ -158,12 +179,15 @@ async function runContinuousLoop(
 // Graceful Shutdown Handler
 // =============================================================================
 
-function setupShutdownHandler(orchestrator: Orchestrator, pidPath: string): void {
+function setupShutdownHandler(
+  orchestrator: Orchestrator,
+  pidPath: string,
+): void {
   let shuttingDown = false;
 
   const shutdown = async (signal: string) => {
     if (shuttingDown) {
-      console.log(chalk.yellow('\nForce quitting...'));
+      console.log(chalk.yellow("\nForce quitting..."));
       await processRegistry.killAll();
       await logger.disableFileLogging();
       process.exit(1);
@@ -177,7 +201,7 @@ function setupShutdownHandler(orchestrator: Orchestrator, pidPath: string): void
       await processRegistry.killAll();
       removePidFile(pidPath);
       await logger.disableFileLogging();
-      console.log(chalk.green('Stopped. Resume with: planbot resume'));
+      console.log(chalk.green("Stopped. Resume with: planbot resume"));
       process.exit(0);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -188,8 +212,8 @@ function setupShutdownHandler(orchestrator: Orchestrator, pidPath: string): void
     }
   };
 
-  process.on('SIGINT', () => shutdown('SIGINT'));
-  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on("SIGINT", () => shutdown("SIGINT"));
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
 }
 
 // =============================================================================
@@ -197,24 +221,49 @@ function setupShutdownHandler(orchestrator: Orchestrator, pidPath: string): void
 // =============================================================================
 
 export function createStartCommand(): Command {
-  return new Command('start')
-    .description('Start processing the ticket queue')
-    .argument('[tickets-file]', 'Path to tickets.yaml or tickets.json', 'tickets.yaml')
-    .option('--dry-run', 'Simulate execution without making changes')
-    .option('--auto-approve', 'Automatically approve all plans')
-    .option('--skip-permissions', 'Skip Claude permission prompts (dangerous)')
-    .option('--allow-shell-hooks', 'Allow shell hook execution from tickets.yaml')
-    .option('--i-accept-autonomous-risk', 'Required when using --skip-permissions with --auto-approve')
-    .option('-C, --continuous', 'Keep running and prompt for new plans after completion')
-    .option('--continuous-timeout <ms>', 'Timeout for next plan prompt (default: 1 hour)', parseInt)
-    .option('-v, --verbose', 'Enable verbose console output')
+  return new Command("start")
+    .description("Start processing the ticket queue")
+    .argument(
+      "[tickets-file]",
+      "Path to tickets.yaml or tickets.json",
+      "tickets.yaml",
+    )
+    .option("--dry-run", "Simulate execution without making changes")
+    .option("--auto-approve", "Automatically approve all plans")
+    .option("--skip-permissions", "Skip Claude permission prompts (dangerous)")
+    .option(
+      "--allow-shell-hooks",
+      "Allow shell hook execution from tickets.yaml",
+    )
+    .option(
+      "--i-accept-autonomous-risk",
+      "Required when using --skip-permissions with --auto-approve",
+    )
+    .option(
+      "-C, --continuous",
+      "Keep running and prompt for new plans after completion",
+    )
+    .option(
+      "--continuous-timeout <ms>",
+      "Timeout for next plan prompt (default: 1 hour)",
+      parseInt,
+    )
+    .option("-v, --verbose", "Enable verbose console output")
     .action(async (ticketsFile: string, options: StartOptions) => {
       // Safety interlock: reject fully autonomous mode without explicit acknowledgment
-      if (options.skipPermissions && options.autoApprove && !options.iAcceptAutonomousRisk) {
+      if (
+        options.skipPermissions &&
+        options.autoApprove &&
+        !options.iAcceptAutonomousRisk
+      ) {
         console.error(
-          chalk.red.bold('\nERROR: Autonomous mode rejected.\n') +
-          chalk.red('Both --skip-permissions and --auto-approve create fully autonomous execution\n') +
-          chalk.red('with no human oversight. Add --i-accept-autonomous-risk to proceed.\n')
+          chalk.red.bold("\nERROR: Autonomous mode rejected.\n") +
+            chalk.red(
+              "Both --skip-permissions and --auto-approve create fully autonomous execution\n",
+            ) +
+            chalk.red(
+              "with no human oversight. Add --i-accept-autonomous-risk to proceed.\n",
+            ),
         );
         process.exit(1);
       }
@@ -222,7 +271,7 @@ export function createStartCommand(): Command {
       const cwd = process.cwd();
       const ticketsPath = resolve(cwd, ticketsFile);
 
-      const spinner = ora('Loading tickets...').start();
+      const spinner = ora("Loading tickets...").start();
 
       try {
         // Check tickets file exists
@@ -233,10 +282,10 @@ export function createStartCommand(): Command {
         }
 
         // Load and validate tickets
-        const content = await readFile(ticketsPath, 'utf-8');
+        const content = await readFile(ticketsPath, "utf-8");
         let parsed: unknown;
 
-        if (ticketsPath.endsWith('.json')) {
+        if (ticketsPath.endsWith(".json")) {
           parsed = JSON.parse(content);
         } else {
           parsed = parseYaml(content);
@@ -247,7 +296,7 @@ export function createStartCommand(): Command {
         // Validate dependencies
         const validation = validateTicketDependencies(ticketsData.tickets);
         if (!validation.valid) {
-          spinner.fail('Invalid ticket dependencies');
+          spinner.fail("Invalid ticket dependencies");
           for (const error of validation.errors) {
             console.log(chalk.red(`  - ${error}`));
           }
@@ -271,7 +320,7 @@ export function createStartCommand(): Command {
         // Initialize .planbot if needed
         const exists = await stateManager.exists(cwd);
         if (!exists) {
-          spinner.text = 'Initializing .planbot directory...';
+          spinner.text = "Initializing .planbot directory...";
           await stateManager.init(cwd);
         }
 
@@ -286,7 +335,11 @@ export function createStartCommand(): Command {
         const pidPath = stateManager.getPaths(cwd).pid;
         const stalePid = checkStalePid(pidPath);
         if (stalePid !== null) {
-          console.error(chalk.red(`Another planbot instance is running (PID ${stalePid}). Exiting.`));
+          console.error(
+            chalk.red(
+              `Another planbot instance is running (PID ${stalePid}). Exiting.`,
+            ),
+          );
           process.exit(1);
         }
         writePidFile(pidPath);
@@ -294,7 +347,7 @@ export function createStartCommand(): Command {
         // Crash recovery detection
         const crashRecovered = await stateManager.recoverFromCrash(cwd);
         if (crashRecovered) {
-          logger.info('Recovered from previous crash — pauseRequested reset');
+          logger.info("Recovered from previous crash — pauseRequested reset");
         }
 
         // Create terminal provider for approvals and questions
@@ -316,13 +369,13 @@ export function createStartCommand(): Command {
         let telegramToken = process.env.TELEGRAM_BOT_TOKEN;
         let telegramChatId = process.env.TELEGRAM_CHAT_ID;
 
-        if (!telegramToken && config.messaging?.provider === 'telegram') {
+        if (!telegramToken && config.messaging?.provider === "telegram") {
           telegramToken = resolveEnvVars(config.messaging.botToken);
           telegramChatId = resolveEnvVars(config.messaging.chatId);
         }
 
         if (telegramToken && telegramChatId) {
-          logger.debug('Telegram credentials found, adding provider', {
+          logger.debug("Telegram credentials found, adding provider", {
             chatId: telegramChatId,
           });
           const telegram = createTelegramProvider({
@@ -330,11 +383,18 @@ export function createStartCommand(): Command {
             chatId: telegramChatId,
           });
           multiplexer.addProvider(telegram);
-          console.log(chalk.dim('  Telegram notifications enabled'));
+          console.log(chalk.dim("  Telegram notifications enabled"));
         }
 
         // Connect providers
         await multiplexer.connectAll();
+
+        // Resolve agent provider from config
+        const agentProvider: AgentProvider =
+          config.agent === "opencode" ? opencode : claude;
+        if (config.agent === "opencode") {
+          console.log(chalk.dim("  Using agent: OpenCode"));
+        }
 
         // Create orchestrator
         const orchestrator = createOrchestrator({
@@ -343,6 +403,7 @@ export function createStartCommand(): Command {
           multiplexer,
           dryRun: options.dryRun,
           verbose: options.verbose,
+          agent: agentProvider,
         });
 
         // Set up event handlers
@@ -351,14 +412,19 @@ export function createStartCommand(): Command {
         // Set up shutdown handler
         setupShutdownHandler(orchestrator, pidPath);
 
-        spinner.succeed('Ready to process tickets');
+        spinner.succeed("Ready to process tickets");
 
         // Startup disk space check
         try {
-          const { getDiskSnapshot } = await import('../../utils/memory-monitor.js');
+          const { getDiskSnapshot } =
+            await import("../../utils/memory-monitor.js");
           const disk = await getDiskSnapshot(cwd);
           if (disk.availableMb < 500) {
-            console.error(chalk.red(`\nInsufficient disk space: ${disk.availableMb.toFixed(0)}MB available (minimum: 500MB)`));
+            console.error(
+              chalk.red(
+                `\nInsufficient disk space: ${disk.availableMb.toFixed(0)}MB available (minimum: 500MB)`,
+              ),
+            );
             removePidFile(pidPath);
             process.exit(1);
           }
@@ -367,23 +433,34 @@ export function createStartCommand(): Command {
         }
 
         const memSnap = getMemorySnapshot();
-        logger.info('Startup memory', { rssMb: memSnap.rssMb.toFixed(1), heapUsedMb: memSnap.heapUsedMb.toFixed(1) });
-        getSessionLogReport().then(r => reportSessionLogSize(r)).catch(() => {});
-        console.log('');
+        logger.info("Startup memory", {
+          rssMb: memSnap.rssMb.toFixed(1),
+          heapUsedMb: memSnap.heapUsedMb.toFixed(1),
+        });
+        getSessionLogReport()
+          .then((r) => reportSessionLogSize(r))
+          .catch(() => {});
+        console.log("");
 
         // Display queue summary
         displayQueueSummary(ticketsData.tickets);
 
         if (options.dryRun) {
-          console.log(chalk.yellow('\nDry run mode: No changes will be made\n'));
+          console.log(
+            chalk.yellow("\nDry run mode: No changes will be made\n"),
+          );
         }
 
         if (options.skipPermissions) {
-          console.log(chalk.red.bold('WARNING: Permission prompts disabled. Use with caution.\n'));
+          console.log(
+            chalk.red.bold(
+              "WARNING: Permission prompts disabled. Use with caution.\n",
+            ),
+          );
         }
 
         // Start processing
-        console.log(chalk.bold('\nStarting queue processing...\n'));
+        console.log(chalk.bold("\nStarting queue processing...\n"));
         await orchestrator.start();
         removePidFile(pidPath);
 
@@ -394,12 +471,11 @@ export function createStartCommand(): Command {
         } else {
           await multiplexer.disconnectAll();
         }
-
       } catch (err) {
-        spinner.fail('Failed to start');
+        spinner.fail("Failed to start");
         const message = err instanceof Error ? err.message : String(err);
         console.error(chalk.red(`\nError: ${message}`));
-        logger.error('Start failed', { error: message });
+        logger.error("Start failed", { error: message });
         process.exit(1);
       }
     });
@@ -472,7 +548,7 @@ function printProgressLine(): void {
   const elapsed = formatElapsed(Date.now() - progress.startTime);
   const bytes = formatBytes(progress.bytesReceived);
 
-  const parts: string[] = [elapsed, bytes + ' output'];
+  const parts: string[] = [elapsed, bytes + " output"];
 
   if (progress.toolCalls > 0) {
     let toolPart = `${progress.toolCalls} tool calls`;
@@ -482,7 +558,7 @@ function printProgressLine(): void {
     parts.push(toolPart);
   }
 
-  console.log(chalk.dim(`  ⟳ ${parts.join(' | ')}`));
+  console.log(chalk.dim(`  ⟳ ${parts.join(" | ")}`));
 }
 
 // =============================================================================
@@ -492,104 +568,115 @@ function printProgressLine(): void {
 function setupEventHandlers(
   orchestrator: Orchestrator,
   _spinner: ReturnType<typeof ora>,
-  dryRun: boolean
+  dryRun: boolean,
 ): void {
-  orchestrator.on('ticket:start', (ticket) => {
+  orchestrator.on("ticket:start", (ticket) => {
     console.log(chalk.blue.bold(`\n>>> Starting: ${ticket.title}`));
     console.log(chalk.dim(`    ID: ${ticket.id}`));
-    logger.setContext({ ticketId: ticket.id, phase: 'starting' });
+    logger.setContext({ ticketId: ticket.id, phase: "starting" });
     startProgressTracker();
   });
 
-  orchestrator.on('ticket:plan-generated', (ticket, plan) => {
+  orchestrator.on("ticket:plan-generated", (ticket, plan) => {
     console.log(chalk.green(`\n>>> Plan generated for: ${ticket.title}`));
-    console.log(chalk.dim('─'.repeat(60)));
+    console.log(chalk.dim("─".repeat(60)));
     console.log(plan);
-    console.log(chalk.dim('─'.repeat(60)));
+    console.log(chalk.dim("─".repeat(60)));
   });
 
-  orchestrator.on('ticket:approved', (ticket) => {
+  orchestrator.on("ticket:approved", (ticket) => {
     console.log(chalk.green(`\n>>> Approved: ${ticket.title}`));
   });
 
-  orchestrator.on('ticket:rejected', (ticket, reason) => {
+  orchestrator.on("ticket:rejected", (ticket, reason) => {
     console.log(chalk.yellow(`\n>>> Rejected: ${ticket.title}`));
     if (reason) {
       console.log(chalk.dim(`    Reason: ${reason}`));
     }
   });
 
-  orchestrator.on('ticket:executing', (ticket) => {
+  orchestrator.on("ticket:executing", (ticket) => {
     console.log(chalk.blue(`\n>>> Executing: ${ticket.title}`));
     if (dryRun) {
-      console.log(chalk.yellow('    (Dry run - no actual changes)'));
+      console.log(chalk.yellow("    (Dry run - no actual changes)"));
     }
   });
 
-  orchestrator.on('ticket:output', (_ticket, text) => {
+  orchestrator.on("ticket:output", (_ticket, text) => {
     if (progress) {
-      progress.bytesReceived += Buffer.byteLength(text, 'utf-8');
+      progress.bytesReceived += Buffer.byteLength(text, "utf-8");
     }
   });
 
-  orchestrator.on('ticket:completed', (ticket) => {
+  orchestrator.on("ticket:completed", (ticket) => {
     stopProgressTracker();
     console.log(chalk.green.bold(`\n>>> Completed: ${ticket.title}`));
     displayQueueSummary(orchestrator.getTickets());
   });
 
-  orchestrator.on('ticket:failed', (ticket, error) => {
+  orchestrator.on("ticket:failed", (ticket, error) => {
     stopProgressTracker();
     console.log(chalk.red.bold(`\n>>> Failed: ${ticket.title}`));
     console.log(chalk.red(`    Error: ${error}`));
   });
 
-  orchestrator.on('ticket:event', (_ticket, event) => {
+  orchestrator.on("ticket:event", (_ticket, event) => {
     if (!progress) return;
-    progress.eventCounts[event.type] = (progress.eventCounts[event.type] ?? 0) + 1;
-    if (event.type === 'tool_use' && event.toolName) {
+    progress.eventCounts[event.type] =
+      (progress.eventCounts[event.type] ?? 0) + 1;
+    if (event.type === "tool_use" && event.toolName) {
       progress.toolCalls++;
       progress.lastToolName = event.toolName;
     }
   });
 
-  orchestrator.on('ticket:skipped', (ticket) => {
+  orchestrator.on("ticket:skipped", (ticket) => {
     stopProgressTracker();
     console.log(chalk.yellow(`\n>>> Skipped: ${ticket.title}`));
   });
 
-  orchestrator.on('question', (ticket, question) => {
+  orchestrator.on("question", (ticket, question) => {
     console.log(chalk.cyan(`\n>>> Question for: ${ticket.title}`));
     console.log(chalk.white(`    ${question}`));
   });
 
-  orchestrator.on('queue:start', () => {
-    logger.info('Queue processing started');
+  orchestrator.on("queue:start", () => {
+    logger.info("Queue processing started");
   });
 
-  orchestrator.on('queue:complete', () => {
-    console.log(chalk.green.bold('\n>>> Queue processing complete\n'));
+  orchestrator.on("queue:complete", () => {
+    console.log(chalk.green.bold("\n>>> Queue processing complete\n"));
   });
 
-  orchestrator.on('queue:paused', () => {
-    console.log(chalk.yellow('\n>>> Queue processing paused'));
-    console.log(chalk.dim('    Resume with: planbot resume'));
+  orchestrator.on("queue:paused", () => {
+    console.log(chalk.yellow("\n>>> Queue processing paused"));
+    console.log(chalk.dim("    Resume with: planbot resume"));
   });
 
-  orchestrator.on('error', (error) => {
+  orchestrator.on("error", (error) => {
     console.log(chalk.red(`\n>>> Error: ${error.message}`));
-    logger.error('Orchestrator error', { error: error.message });
+    logger.error("Orchestrator error", { error: error.message });
   });
 }
 
 export function displayQueueSummary(
-  tickets: Array<{ id: string; title: string; status: string; priority: number; complete?: boolean }>
+  tickets: Array<{
+    id: string;
+    title: string;
+    status: string;
+    priority: number;
+    complete?: boolean;
+  }>,
 ): void {
-  const completed = tickets.filter(t => t.status === 'completed' || t.complete === true);
-  const failed = tickets.filter(t => t.status === 'failed');
-  const pending = tickets.filter(t => t.status === 'pending' && t.complete !== true);
+  const completed = tickets.filter(
+    (t) => t.status === "completed" || t.complete === true,
+  );
+  const failed = tickets.filter((t) => t.status === "failed");
+  const pending = tickets.filter(
+    (t) => t.status === "pending" && t.complete !== true,
+  );
 
-  console.log(chalk.bold('Queue Summary:'));
+  console.log(chalk.bold("Queue Summary:"));
   console.log(chalk.dim(`  Total tickets: ${tickets.length}`));
   console.log(chalk.green(`  Pending:       ${pending.length}`));
   console.log(chalk.blue(`  Completed:     ${completed.length}`));

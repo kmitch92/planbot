@@ -29,7 +29,7 @@ const envSubstitutableString = z.string().refine(
   {
     message:
       "Invalid environment variable syntax. Use ${VAR_NAME} with uppercase letters, numbers, and underscores.",
-  }
+  },
 );
 
 // =============================================================================
@@ -143,8 +143,13 @@ export const ShellHookActionSchema = z.object({
   type: z.literal("shell"),
   command: z.string().min(1).max(10000),
   /** Working directory for this hook, relative to project root or ticket cwd */
-  cwd: z.string().min(1).max(500)
-    .refine(val => !val.includes('..'), { message: 'Path must not contain ..' })
+  cwd: z
+    .string()
+    .min(1)
+    .max(500)
+    .refine((val) => !val.includes(".."), {
+      message: "Path must not contain ..",
+    })
     .optional(),
   every: z.number().int().min(1).optional(),
 });
@@ -195,8 +200,13 @@ export const ShellConditionSchema = z.object({
   type: z.literal("shell"),
   command: z.string().min(1).max(10000),
   /** Working directory for condition check, relative to project root or ticket cwd */
-  cwd: z.string().min(1).max(500)
-    .refine(val => !val.includes('..'), { message: 'Path must not contain ..' })
+  cwd: z
+    .string()
+    .min(1)
+    .max(500)
+    .refine((val) => !val.includes(".."), {
+      message: "Path must not contain ..",
+    })
     .optional(),
 });
 
@@ -223,13 +233,33 @@ export const LoopConfigSchema = z.object({
 // Top-Level Configuration
 // =============================================================================
 
-export const ModelSchema = z.enum(["sonnet", "opus", "haiku"]);
+/**
+ * Claude-specific short model aliases (kept for backwards compatibility).
+ * For opencode, use the full provider/model string (e.g. "anthropic/claude-sonnet-4-5").
+ */
+export const ClaudeModelSchema = z.enum(["sonnet", "opus", "haiku"]);
+
+/**
+ * Model string — accepts either a Claude short alias OR a full provider/model
+ * string (e.g. "anthropic/claude-sonnet-4-5", "openai/gpt-4o").
+ */
+export const ModelSchema = z.union([ClaudeModelSchema, z.string().min(1)]);
+
+/** Which AI coding agent to use for ticket execution. */
+export const AgentSchema = z
+  .enum(["claude-code", "opencode"])
+  .default("claude-code");
 
 export const ConfigSchema = z.object({
-  /** Claude model override — omit to use your Claude CLI default */
+  /** AI coding agent to use. Defaults to "claude-code". */
+  agent: AgentSchema,
+  /** Model override — omit to use the agent's default model.
+   *  For claude-code: "sonnet" | "opus" | "haiku"
+   *  For opencode: "provider/model" string, e.g. "anthropic/claude-sonnet-4-5"
+   */
   model: ModelSchema.optional(),
-  /** Fallback model to use when rate limits are hit */
-  fallbackModel: ModelSchema.default("sonnet"),
+  /** Fallback model to use when rate limits are hit (claude-code only) */
+  fallbackModel: ClaudeModelSchema.default("sonnet"),
   /** Maximum budget in dollars per ticket */
   maxBudgetPerTicket: z.number().positive().default(10),
   /** Maximum retry attempts for failed operations */
@@ -243,10 +273,13 @@ export const ConfigSchema = z.object({
   /** Whether to generate a plan before execution (default: true). When false, tickets execute directly from their description. */
   planMode: z.boolean().default(true),
   /** Skip permission prompts (dangerous mode) — CLI-only, rejected in YAML config */
-  skipPermissions: z.boolean().default(false).refine(
-    (val) => val === false,
-    { message: "skipPermissions cannot be enabled via config file. Use the --skip-permissions CLI flag." }
-  ),
+  skipPermissions: z
+    .boolean()
+    .default(false)
+    .refine((val) => val === false, {
+      message:
+        "skipPermissions cannot be enabled via config file. Use the --skip-permissions CLI flag.",
+    }),
   /** Enable shell hook execution (default: false for security) */
   allowShellHooks: z.boolean().default(false),
   /** Messaging provider configuration */
@@ -288,15 +321,30 @@ export const TicketStatusSchema = z.enum([
 // Image Support
 // =============================================================================
 
-export const SUPPORTED_IMAGE_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.bmp', '.tiff'] as const;
+export const SUPPORTED_IMAGE_EXTENSIONS = [
+  ".png",
+  ".jpg",
+  ".jpeg",
+  ".gif",
+  ".webp",
+  ".svg",
+  ".bmp",
+  ".tiff",
+] as const;
 export const MAX_IMAGES_PER_TICKET = 10;
 
-export const ImagePathSchema = z.string().min(1).max(500)
-  .refine(val => !val.includes('..'), { message: 'Path must not contain ..' })
-  .refine(val => {
-    const ext = val.slice(val.lastIndexOf('.')).toLowerCase();
-    return (SUPPORTED_IMAGE_EXTENSIONS as readonly string[]).includes(ext);
-  }, { message: 'Unsupported image format' });
+export const ImagePathSchema = z
+  .string()
+  .min(1)
+  .max(500)
+  .refine((val) => !val.includes(".."), { message: "Path must not contain .." })
+  .refine(
+    (val) => {
+      const ext = val.slice(val.lastIndexOf(".")).toLowerCase();
+      return (SUPPORTED_IMAGE_EXTENSIONS as readonly string[]).includes(ext);
+    },
+    { message: "Unsupported image format" },
+  );
 
 export const TicketSchema = z.object({
   /** Unique ticket identifier */
@@ -322,8 +370,13 @@ export const TicketSchema = z.object({
   /** Override global planMode for this ticket. When false, skips plan generation and executes directly. */
   planMode: z.boolean().optional(),
   /** Working directory for ticket execution, relative to project root */
-  cwd: z.string().min(1).max(500)
-    .refine(val => !val.includes('..'), { message: 'Path must not contain ..' })
+  cwd: z
+    .string()
+    .min(1)
+    .max(500)
+    .refine((val) => !val.includes(".."), {
+      message: "Path must not contain ..",
+    })
     .optional(),
   /** Loop configuration for iterative execution */
   loop: LoopConfigSchema.optional(),
@@ -382,14 +435,17 @@ export const StateSchema = z.object({
   /** Questions awaiting user response */
   pendingQuestions: z.array(PendingQuestionSchema).default([]),
   /** Loop iteration state for pause/resume */
-  loopState: z.object({
-    /** Current iteration (0-indexed) */
-    currentIteration: z.number().int().nonnegative(),
-    /** Maximum iterations configured */
-    maxIterations: z.number().int().positive(),
-    /** Whether the completion condition has been met */
-    conditionMet: z.boolean(),
-  }).nullable().default(null),
+  loopState: z
+    .object({
+      /** Current iteration (0-indexed) */
+      currentIteration: z.number().int().nonnegative(),
+      /** Maximum iterations configured */
+      maxIterations: z.number().int().positive(),
+      /** Whether the completion condition has been met */
+      conditionMet: z.boolean(),
+    })
+    .nullable()
+    .default(null),
 });
 
 // =============================================================================
@@ -491,7 +547,7 @@ export function parseTicketsFile(content: unknown): TicketsFile {
  * @returns SafeParseResult with success flag and data or error
  */
 export function safeParseTicketsFile(
-  content: unknown
+  content: unknown,
 ): z.SafeParseReturnType<z.input<typeof TicketsFileSchema>, TicketsFile> {
   return TicketsFileSchema.safeParse(content);
 }
@@ -514,7 +570,7 @@ export function parseStateFile(content: unknown): State {
  * @returns SafeParseResult with success flag and data or error
  */
 export function safeParseStateFile(
-  content: unknown
+  content: unknown,
 ): z.SafeParseReturnType<z.input<typeof StateSchema>, State> {
   return StateSchema.safeParse(content);
 }
@@ -543,7 +599,7 @@ export function resolveEnvVars(value: string): string {
  * @returns Configuration with environment variables resolved
  */
 export function resolveMessagingConfig<T extends MessagingConfig>(
-  config: T
+  config: T,
 ): T {
   const resolved = { ...config };
 
@@ -602,7 +658,7 @@ export function validateTicketDependencies(tickets: Ticket[]): {
       for (const depId of ticket.dependencies) {
         if (!ticketIds.has(depId)) {
           errors.push(
-            `Ticket "${ticket.id}" depends on non-existent ticket "${depId}"`
+            `Ticket "${ticket.id}" depends on non-existent ticket "${depId}"`,
           );
         }
       }
@@ -625,7 +681,9 @@ export function validateTicketDependencies(tickets: Ticket[]): {
             return true;
           }
         } else if (recursionStack.has(depId)) {
-          errors.push(`Circular dependency detected involving ticket "${ticketId}"`);
+          errors.push(
+            `Circular dependency detected involving ticket "${ticketId}"`,
+          );
           return true;
         }
       }

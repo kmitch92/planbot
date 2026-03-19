@@ -20,14 +20,28 @@ import {
 import { resolveAndValidateImages, buildImagePromptSection } from "./images.js";
 import { stateManager } from "./state.js";
 import { markTicketCompleteInFile } from "./tickets-io.js";
-import { claude, getLastRateLimitResetsAt, clearRateLimitResetsAt } from "./claude.js";
+import {
+  claude,
+  getLastRateLimitResetsAt,
+  clearRateLimitResetsAt,
+} from "./claude.js";
+import type { AgentProvider } from "./agent-provider.js";
 import { hookExecutor, type HookContext } from "./hooks.js";
 import type { Multiplexer } from "../messaging/multiplexer.js";
 import { logger } from "../utils/logger.js";
 import { cleanupSessionLogs } from "../utils/session-report.js";
-import { isRateLimitError, shouldFallback, calculateRateLimitWait } from "./rate-limit-detection.js";
+import {
+  isRateLimitError,
+  shouldFallback,
+  calculateRateLimitWait,
+} from "./rate-limit-detection.js";
 import { evaluateCondition, type ConditionResult } from "./loop-condition.js";
-import { createMemoryMonitor, getMemorySnapshot, getDiskSnapshot, type MemoryMonitor } from "../utils/memory-monitor.js";
+import {
+  createMemoryMonitor,
+  getMemorySnapshot,
+  getDiskSnapshot,
+  type MemoryMonitor,
+} from "../utils/memory-monitor.js";
 import { interruptibleDelay } from "../utils/interruptible-delay.js";
 import { formatDuration } from "../utils/duration.js";
 
@@ -41,6 +55,8 @@ export interface OrchestratorOptions {
   multiplexer: Multiplexer;
   dryRun?: boolean;
   verbose?: boolean;
+  /** AI coding agent to use. Defaults to Claude Code if not specified. */
+  agent?: AgentProvider;
 }
 
 export interface OrchestratorEvents {
@@ -53,17 +69,38 @@ export interface OrchestratorEvents {
   "ticket:failed": [ticket: Ticket, error: string];
   "ticket:skipped": [ticket: Ticket];
   "ticket:output": [ticket: Ticket, text: string];
-  "ticket:event": [ticket: Ticket, event: { type: string; toolName?: string; message?: string }];
+  "ticket:event": [
+    ticket: Ticket,
+    event: { type: string; toolName?: string; message?: string },
+  ];
   question: [ticket: Ticket, question: string];
   "queue:start": [];
   "queue:complete": [];
   "queue:paused": [];
-  "loop:iteration-start": [ticket: Ticket, iteration: number, maxIterations: number];
-  "loop:iteration-complete": [ticket: Ticket, iteration: number, conditionMet: boolean];
+  "loop:iteration-start": [
+    ticket: Ticket,
+    iteration: number,
+    maxIterations: number,
+  ];
+  "loop:iteration-complete": [
+    ticket: Ticket,
+    iteration: number,
+    conditionMet: boolean,
+  ];
   "loop:condition-failed": [ticket: Ticket, iteration: number, error: string];
   "pacing:delay-start": [reason: string, durationMs: number, ticketId?: string];
-  "pacing:delay-tick": [reason: string, elapsedMs: number, remainingMs: number, ticketId?: string];
-  "pacing:delay-end": [reason: string, completed: boolean, elapsedMs: number, ticketId?: string];
+  "pacing:delay-tick": [
+    reason: string,
+    elapsedMs: number,
+    remainingMs: number,
+    ticketId?: string,
+  ];
+  "pacing:delay-end": [
+    reason: string,
+    completed: boolean,
+    elapsedMs: number,
+    ticketId?: string,
+  ];
   error: [error: Error];
 }
 
@@ -114,6 +151,7 @@ class OrchestratorImpl
   private readonly multiplexer: Multiplexer;
   private readonly dryRun: boolean;
   private readonly verbose: boolean;
+  private readonly agent: AgentProvider;
 
   private ticketsFile: TicketsFile | null = null;
   private state: State | null = null;
@@ -134,6 +172,7 @@ class OrchestratorImpl
     this.multiplexer = options.multiplexer;
     this.dryRun = options.dryRun ?? false;
     this.verbose = options.verbose ?? false;
+    this.agent = options.agent ?? claude;
   }
 
   // ===========================================================================
@@ -165,12 +204,12 @@ class OrchestratorImpl
           this.ticketsFile!.config.memoryCheckIntervalSec,
           this.ticketsFile!.config.memoryCeilingMb,
           (snapshot) => {
-            logger.warn('Memory ceiling hit, requesting pause', {
+            logger.warn("Memory ceiling hit, requesting pause", {
               rssMb: snapshot.rssMb.toFixed(1),
               ceilingMb: this.ticketsFile!.config.memoryCeilingMb,
             });
             this.pauseRequested = true;
-          }
+          },
         );
       }
 
@@ -235,7 +274,7 @@ class OrchestratorImpl
     this.stopRequested = true;
     this.pauseRequested = true;
 
-    claude.abort();
+    this.agent.abort();
 
     if (this.state) {
       await stateManager.update(this.projectRoot, { pauseRequested: true });
@@ -257,11 +296,15 @@ class OrchestratorImpl
     await this.saveTicketsFile();
 
     this.emit("ticket:skipped", ticket);
-    this.multiplexer.broadcastStatus({
-      ticketId: ticket.id,
-      ticketTitle: ticket.title,
-      status: "skipped",
-    }).catch(err => logger.warn("Failed to broadcast status", { error: String(err) }));
+    this.multiplexer
+      .broadcastStatus({
+        ticketId: ticket.id,
+        ticketTitle: ticket.title,
+        status: "skipped",
+      })
+      .catch((err) =>
+        logger.warn("Failed to broadcast status", { error: String(err) }),
+      );
   }
 
   async approveTicket(ticketId: string): Promise<void> {
@@ -344,10 +387,18 @@ class OrchestratorImpl
     return { ...global, ...perTicket };
   }
 
-  private async applyDelay(durationMs: number, reason: string, ticketId?: string): Promise<boolean> {
+  private async applyDelay(
+    durationMs: number,
+    reason: string,
+    ticketId?: string,
+  ): Promise<boolean> {
     if (!durationMs || durationMs <= 0) return true;
 
-    logger.info("Pacing delay starting", { reason, durationMs: formatDuration(durationMs), ticketId });
+    logger.info("Pacing delay starting", {
+      reason,
+      durationMs: formatDuration(durationMs),
+      ticketId,
+    });
     this.emit("pacing:delay-start", reason, durationMs, ticketId);
 
     const result = await interruptibleDelay({
@@ -358,8 +409,19 @@ class OrchestratorImpl
       },
     });
 
-    this.emit("pacing:delay-end", reason, result.completed, result.elapsedMs, ticketId);
-    logger.info("Pacing delay ended", { reason, completed: result.completed, elapsedMs: result.elapsedMs, ticketId });
+    this.emit(
+      "pacing:delay-end",
+      reason,
+      result.completed,
+      result.elapsedMs,
+      ticketId,
+    );
+    logger.info("Pacing delay ended", {
+      reason,
+      completed: result.completed,
+      elapsedMs: result.elapsedMs,
+      ticketId,
+    });
 
     return result.completed;
   }
@@ -367,8 +429,18 @@ class OrchestratorImpl
   private async handleRateLimitWithRetry(
     ticketId: string,
     config: Config,
-    retryFn: () => Promise<{ success: boolean; error?: string; sessionId?: string; costUsd?: number }>,
-  ): Promise<{ success: boolean; error?: string; sessionId?: string; costUsd?: number } | null> {
+    retryFn: () => Promise<{
+      success: boolean;
+      error?: string;
+      sessionId?: string;
+      costUsd?: number;
+    }>,
+  ): Promise<{
+    success: boolean;
+    error?: string;
+    sessionId?: string;
+    costUsd?: number;
+  } | null> {
     const retryConfig = config.rateLimitRetry;
     if (!retryConfig.enabled) return null;
 
@@ -381,7 +453,10 @@ class OrchestratorImpl
     });
 
     if (!waitResult.shouldWait) {
-      logger.info("Rate limit retry skipped", { reason: waitResult.reason, ticketId });
+      logger.info("Rate limit retry skipped", {
+        reason: waitResult.reason,
+        ticketId,
+      });
       return null;
     }
 
@@ -394,16 +469,26 @@ class OrchestratorImpl
 
     // Notify via multiplexer if configured
     if (retryConfig.notifyOnWait) {
-      this.multiplexer.broadcastStatus({
-        ticketId,
-        ticketTitle: ticketId,
-        status: "waiting",
-        message: `Rate limit hit — waiting ${formatDuration(waitResult.waitMs)} for reset before retry`,
-      }).catch(err => logger.warn("Failed to broadcast rate limit wait status", { error: String(err) }));
+      this.multiplexer
+        .broadcastStatus({
+          ticketId,
+          ticketTitle: ticketId,
+          status: "waiting",
+          message: `Rate limit hit — waiting ${formatDuration(waitResult.waitMs)} for reset before retry`,
+        })
+        .catch((err) =>
+          logger.warn("Failed to broadcast rate limit wait status", {
+            error: String(err),
+          }),
+        );
     }
 
     // Wait using existing interruptible delay infrastructure
-    const delayCompleted = await this.applyDelay(waitResult.waitMs, "rateLimitRetry", ticketId);
+    const delayCompleted = await this.applyDelay(
+      waitResult.waitMs,
+      "rateLimitRetry",
+      ticketId,
+    );
 
     // Clear stale resetsAt
     clearRateLimitResetsAt();
@@ -418,7 +503,10 @@ class OrchestratorImpl
     return retryFn();
   }
 
-  private async waitForStartAfter(startAfter: string | undefined, ticketId?: string): Promise<boolean> {
+  private async waitForStartAfter(
+    startAfter: string | undefined,
+    ticketId?: string,
+  ): Promise<boolean> {
     if (!startAfter) return true;
 
     const targetTime = new Date(startAfter).getTime();
@@ -466,7 +554,9 @@ class OrchestratorImpl
       }
 
       if (this.memoryMonitor?.isAboveCeiling()) {
-        logger.warn('Memory above ceiling before processing next ticket, pausing queue');
+        logger.warn(
+          "Memory above ceiling before processing next ticket, pausing queue",
+        );
         break;
       }
 
@@ -475,14 +565,14 @@ class OrchestratorImpl
         try {
           const disk = await getDiskSnapshot(this.projectRoot);
           if (disk.availableMb < config.diskFloorMb) {
-            logger.warn('Disk space below floor, pausing queue', {
+            logger.warn("Disk space below floor, pausing queue", {
               availableMb: disk.availableMb.toFixed(0),
               floorMb: config.diskFloorMb,
             });
             break;
           }
         } catch (err) {
-          logger.warn('Disk space check failed', {
+          logger.warn("Disk space check failed", {
             error: err instanceof Error ? err.message : String(err),
           });
         }
@@ -491,9 +581,14 @@ class OrchestratorImpl
       // Per-ticket pacing checks
       const ticketPacing = this.resolvePacing(ticket, config);
       if (ticketPacing.startAfter) {
-        const proceeded = await this.waitForStartAfter(ticketPacing.startAfter, ticket.id);
+        const proceeded = await this.waitForStartAfter(
+          ticketPacing.startAfter,
+          ticket.id,
+        );
         if (!proceeded) {
-          logger.info("Per-ticket startAfter interrupted", { ticketId: ticket.id });
+          logger.info("Per-ticket startAfter interrupted", {
+            ticketId: ticket.id,
+          });
           this.pauseRequested = true;
           break;
         }
@@ -512,12 +607,16 @@ class OrchestratorImpl
         await this.saveTicketsFile();
 
         this.emit("ticket:failed", ticket, error.message);
-        this.multiplexer.broadcastStatus({
-          ticketId: ticket.id,
-          ticketTitle: ticket.title,
-          status: "failed",
-          error: error.message,
-        }).catch(err => logger.warn("Failed to broadcast status", { error: String(err) }));
+        this.multiplexer
+          .broadcastStatus({
+            ticketId: ticket.id,
+            ticketTitle: ticket.title,
+            status: "failed",
+            error: error.message,
+          })
+          .catch((err) =>
+            logger.warn("Failed to broadcast status", { error: String(err) }),
+          );
         this.emit("error", error);
 
         if (!config.continueOnError) {
@@ -532,9 +631,15 @@ class OrchestratorImpl
       if (processable.length > 0) {
         const postTicketPacing = this.resolvePacing(ticket, config);
         if (postTicketPacing.delayBetweenTickets) {
-          const proceeded = await this.applyDelay(postTicketPacing.delayBetweenTickets, "delayBetweenTickets", ticket.id);
+          const proceeded = await this.applyDelay(
+            postTicketPacing.delayBetweenTickets,
+            "delayBetweenTickets",
+            ticket.id,
+          );
           if (!proceeded) {
-            logger.info("Delay between tickets interrupted", { ticketId: ticket.id });
+            logger.info("Delay between tickets interrupted", {
+              ticketId: ticket.id,
+            });
             this.pauseRequested = true;
             break;
           }
@@ -549,7 +654,7 @@ class OrchestratorImpl
             maxAgeDays: config.sessionCleanup.maxAgeDays,
           });
         } catch (err) {
-          logger.warn('Inter-ticket session cleanup failed', {
+          logger.warn("Inter-ticket session cleanup failed", {
             error: err instanceof Error ? err.message : String(err),
           });
         }
@@ -621,7 +726,7 @@ class OrchestratorImpl
   private async resumeFromApproval(
     ticket: Ticket,
     config: Config,
-    hooks?: Hooks
+    hooks?: Hooks,
   ): Promise<void> {
     // Resolve ticket working directory
     const ticketCwd = ticket.cwd
@@ -646,18 +751,22 @@ class OrchestratorImpl
       ticket.status = "skipped";
       await this.saveTicketsFile();
       this.emit("ticket:skipped", ticket);
-      this.multiplexer.broadcastStatus({
-        ticketId: ticket.id,
-        ticketTitle: ticket.title,
-        status: "skipped",
-      }).catch(err => logger.warn("Failed to broadcast status", { error: String(err) }));
+      this.multiplexer
+        .broadcastStatus({
+          ticketId: ticket.id,
+          ticketTitle: ticket.title,
+          status: "skipped",
+        })
+        .catch((err) =>
+          logger.warn("Failed to broadcast status", { error: String(err) }),
+        );
     }
   }
 
   private async resumeFromExecution(
     ticket: Ticket,
     config: Config,
-    hooks?: Hooks
+    hooks?: Hooks,
   ): Promise<void> {
     // Resolve ticket working directory
     const ticketCwd = ticket.cwd
@@ -666,7 +775,7 @@ class OrchestratorImpl
 
     const sessionId = await stateManager.loadSession(
       this.projectRoot,
-      ticket.id
+      ticket.id,
     );
 
     // Check for loop state — route to loop execution if mid-loop
@@ -674,7 +783,15 @@ class OrchestratorImpl
     if (currentState.loopState && ticket.loop) {
       const plan = await stateManager.loadPlan(this.projectRoot, ticket.id);
       if (plan) {
-        await this.executeLoopTicket(ticket, plan, config, hooks, [], [], ticketCwd);
+        await this.executeLoopTicket(
+          ticket,
+          plan,
+          config,
+          hooks,
+          [],
+          [],
+          ticketCwd,
+        );
         return;
       }
     }
@@ -683,7 +800,15 @@ class OrchestratorImpl
       logger.warn("No saved session found, re-executing");
       const plan = await stateManager.loadPlan(this.projectRoot, ticket.id);
       if (plan) {
-        await this.executeTicket(ticket, plan, config, hooks, [], [], ticketCwd);
+        await this.executeTicket(
+          ticket,
+          plan,
+          config,
+          hooks,
+          [],
+          [],
+          ticketCwd,
+        );
       } else {
         await this.processTicket(ticket, config, hooks);
       }
@@ -692,7 +817,14 @@ class OrchestratorImpl
 
     logger.info("Resuming Claude session", { ticketId: ticket.id, sessionId });
 
-    await this.executeWithSession(ticket, sessionId, config, hooks, undefined, ticketCwd);
+    await this.executeWithSession(
+      ticket,
+      sessionId,
+      config,
+      hooks,
+      undefined,
+      ticketCwd,
+    );
   }
 
   // ===========================================================================
@@ -703,7 +835,7 @@ class OrchestratorImpl
     ticket: Ticket,
     config: Config,
     globalHooks?: Hooks,
-    initialFeedback?: string
+    initialFeedback?: string,
   ): Promise<void> {
     logger.setContext({ ticketId: ticket.id });
     logger.info("Processing ticket", { title: ticket.title });
@@ -716,17 +848,22 @@ class OrchestratorImpl
       : this.projectRoot;
 
     // Resolve images once for all prompt builders
-    const { resolved: resolvedImagePaths, warnings: imageWarnings } = ticket.images?.length
+    const { resolved: resolvedImagePaths, warnings: imageWarnings } = ticket
+      .images?.length
       ? await resolveAndValidateImages(this.projectRoot, ticket.images)
       : { resolved: [] as string[], warnings: [] as string[] };
 
     this.emit("ticket:start", ticket);
-    this.multiplexer.broadcastStatus({
-      ticketId: ticket.id,
-      ticketTitle: ticket.title,
-      status: "started",
-      message: "Processing started",
-    }).catch(err => logger.warn("Failed to broadcast status", { error: String(err) }));
+    this.multiplexer
+      .broadcastStatus({
+        ticketId: ticket.id,
+        ticketTitle: ticket.title,
+        status: "started",
+        message: "Processing started",
+      })
+      .catch((err) =>
+        logger.warn("Failed to broadcast status", { error: String(err) }),
+      );
 
     // Execute beforeEach hooks
     await this.executeHooks(mergedHooks, "beforeEach", {
@@ -746,14 +883,28 @@ class OrchestratorImpl
 
       for (let attempt = 0; attempt <= maxRevisions; attempt++) {
         // Phase: Planning
-        await this.updateState({ currentTicketId: ticket.id, currentPhase: "planning" });
+        await this.updateState({
+          currentTicketId: ticket.id,
+          currentPhase: "planning",
+        });
         ticket.status = "planning";
         await this.saveTicketsFile();
 
-        const plan = await this.generatePlan(ticket, config, ticketCwd, feedback, resolvedImagePaths, imageWarnings);
+        const plan = await this.generatePlan(
+          ticket,
+          config,
+          ticketCwd,
+          feedback,
+          resolvedImagePaths,
+          imageWarnings,
+        );
 
         // Save plan
-        const planPath = await stateManager.savePlan(this.projectRoot, ticket.id, plan);
+        const planPath = await stateManager.savePlan(
+          this.projectRoot,
+          ticket.id,
+          plan,
+        );
 
         // Execute onPlanGenerated hooks
         await this.executeHooks(mergedHooks, "onPlanGenerated", {
@@ -786,18 +937,38 @@ class OrchestratorImpl
         if (result.approved) {
           approved = true;
           this.emit("ticket:approved", ticket);
-          this.multiplexer.broadcastStatus({
-            ticketId: ticket.id,
-            ticketTitle: ticket.title,
-            status: "started",
-            message: "Plan approved, execution starting",
-          }).catch(err => logger.warn("Failed to broadcast status", { error: String(err) }));
+          this.multiplexer
+            .broadcastStatus({
+              ticketId: ticket.id,
+              ticketTitle: ticket.title,
+              status: "started",
+              message: "Plan approved, execution starting",
+            })
+            .catch((err) =>
+              logger.warn("Failed to broadcast status", { error: String(err) }),
+            );
 
           // Phase: Executing
           if (ticket.loop) {
-            await this.executeLoopTicket(ticket, plan, config, mergedHooks, resolvedImagePaths, imageWarnings, ticketCwd);
+            await this.executeLoopTicket(
+              ticket,
+              plan,
+              config,
+              mergedHooks,
+              resolvedImagePaths,
+              imageWarnings,
+              ticketCwd,
+            );
           } else {
-            await this.executeTicket(ticket, plan, config, mergedHooks, resolvedImagePaths, imageWarnings, ticketCwd);
+            await this.executeTicket(
+              ticket,
+              plan,
+              config,
+              mergedHooks,
+              resolvedImagePaths,
+              imageWarnings,
+              ticketCwd,
+            );
           }
           break;
         }
@@ -829,11 +1000,15 @@ class OrchestratorImpl
           cwd: ticketCwd,
         });
         this.emit("ticket:skipped", ticket);
-        this.multiplexer.broadcastStatus({
-          ticketId: ticket.id,
-          ticketTitle: ticket.title,
-          status: "skipped",
-        }).catch(err => logger.warn("Failed to broadcast status", { error: String(err) }));
+        this.multiplexer
+          .broadcastStatus({
+            ticketId: ticket.id,
+            ticketTitle: ticket.title,
+            status: "skipped",
+          })
+          .catch((err) =>
+            logger.warn("Failed to broadcast status", { error: String(err) }),
+          );
         logger.clearContext();
         return;
       }
@@ -841,11 +1016,31 @@ class OrchestratorImpl
       // Direct execution mode — skip planning and approval
       logger.info("Plan mode disabled, executing directly");
 
-      const directPrompt = this.buildDirectExecutionPrompt(ticket, resolvedImagePaths, imageWarnings);
+      const directPrompt = this.buildDirectExecutionPrompt(
+        ticket,
+        resolvedImagePaths,
+        imageWarnings,
+      );
       if (ticket.loop) {
-        await this.executeLoopTicket(ticket, directPrompt, config, mergedHooks, resolvedImagePaths, imageWarnings, ticketCwd);
+        await this.executeLoopTicket(
+          ticket,
+          directPrompt,
+          config,
+          mergedHooks,
+          resolvedImagePaths,
+          imageWarnings,
+          ticketCwd,
+        );
       } else {
-        await this.executeTicket(ticket, directPrompt, config, mergedHooks, resolvedImagePaths, imageWarnings, ticketCwd);
+        await this.executeTicket(
+          ticket,
+          directPrompt,
+          config,
+          mergedHooks,
+          resolvedImagePaths,
+          imageWarnings,
+          ticketCwd,
+        );
       }
     }
 
@@ -860,10 +1055,22 @@ class OrchestratorImpl
     logger.clearContext();
   }
 
-  private async generatePlan(ticket: Ticket, config: Config, ticketCwd: string, feedback?: string, resolvedImagePaths: string[] = [], imageWarnings: string[] = []): Promise<string> {
+  private async generatePlan(
+    ticket: Ticket,
+    config: Config,
+    ticketCwd: string,
+    feedback?: string,
+    resolvedImagePaths: string[] = [],
+    imageWarnings: string[] = [],
+  ): Promise<string> {
     logger.info("Generating plan");
 
-    const prompt = this.buildPlanPrompt(ticket, feedback, resolvedImagePaths, imageWarnings);
+    const prompt = this.buildPlanPrompt(
+      ticket,
+      feedback,
+      resolvedImagePaths,
+      imageWarnings,
+    );
 
     if (this.dryRun) {
       logger.info("Dry run: skipping actual plan generation");
@@ -875,42 +1082,57 @@ class OrchestratorImpl
     const fallbackModel = config.fallbackModel;
 
     // First attempt with current model
-    let result = await claude.generatePlan(prompt, {
-      model: currentModel,
-      timeout: config.timeouts.planGeneration,
-      cwd: ticketCwd,
-      verbose: this.verbose,
-    }, (text) => this.handleOutput(ticket, text));
+    let result = await this.agent.generatePlan(
+      prompt,
+      {
+        model: currentModel,
+        timeout: config.timeouts.planGeneration,
+        cwd: ticketCwd,
+        verbose: this.verbose,
+      },
+      (text) => this.handleOutput(ticket, text),
+    );
 
     // Check for rate limit and attempt fallback if applicable
-    if (isRateLimitError({
-      success: result.success,
-      error: result.error,
-      costUsd: result.costUsd,
-      outputLength: result.plan?.length
-    }) && shouldFallback(currentModel, fallbackModel)) {
-      logger.warn('Claude rate limit hit, retrying with fallback model', {
+    if (
+      isRateLimitError({
+        success: result.success,
+        error: result.error,
+        costUsd: result.costUsd,
+        outputLength: result.plan?.length,
+      }) &&
+      shouldFallback(currentModel, fallbackModel)
+    ) {
+      logger.warn("Claude rate limit hit, retrying with fallback model", {
         ticketId: ticket.id,
-        originalModel: currentModel || 'CLI default',
+        originalModel: currentModel || "CLI default",
         fallbackModel,
       });
 
       // Retry with fallback model
-      result = await claude.generatePlan(prompt, {
-        model: fallbackModel,
-        timeout: config.timeouts.planGeneration,
-        cwd: ticketCwd,
-        verbose: this.verbose,
-      }, (text) => this.handleOutput(ticket, text));
+      result = await this.agent.generatePlan(
+        prompt,
+        {
+          model: fallbackModel,
+          timeout: config.timeouts.planGeneration,
+          cwd: ticketCwd,
+          verbose: this.verbose,
+        },
+        (text) => this.handleOutput(ticket, text),
+      );
     }
 
     // If both primary and fallback hit rate limits, attempt wait-and-retry
-    if (!result.success && isRateLimitError({
-      success: result.success,
-      error: result.error,
-      costUsd: result.costUsd,
-      outputLength: result.plan?.length,
-    }) && config.rateLimitRetry.enabled) {
+    if (
+      !result.success &&
+      isRateLimitError({
+        success: result.success,
+        error: result.error,
+        costUsd: result.costUsd,
+        outputLength: result.plan?.length,
+      }) &&
+      config.rateLimitRetry.enabled
+    ) {
       const resetsAt = getLastRateLimitResetsAt();
       const waitCalc = calculateRateLimitWait({
         resetsAt,
@@ -927,30 +1149,46 @@ class OrchestratorImpl
         });
 
         if (config.rateLimitRetry.notifyOnWait) {
-          this.multiplexer.broadcastStatus({
-            ticketId: ticket.id,
-            ticketTitle: ticket.title,
-            status: "waiting",
-            message: `Rate limit hit during planning — waiting ${formatDuration(waitCalc.waitMs)} for reset`,
-          }).catch(err => logger.warn("Failed to broadcast rate limit wait status", { error: String(err) }));
+          this.multiplexer
+            .broadcastStatus({
+              ticketId: ticket.id,
+              ticketTitle: ticket.title,
+              status: "waiting",
+              message: `Rate limit hit during planning — waiting ${formatDuration(waitCalc.waitMs)} for reset`,
+            })
+            .catch((err) =>
+              logger.warn("Failed to broadcast rate limit wait status", {
+                error: String(err),
+              }),
+            );
         }
 
-        const delayCompleted = await this.applyDelay(waitCalc.waitMs, "rateLimitRetry", ticket.id);
+        const delayCompleted = await this.applyDelay(
+          waitCalc.waitMs,
+          "rateLimitRetry",
+          ticket.id,
+        );
         clearRateLimitResetsAt();
 
         if (delayCompleted) {
-          result = await claude.generatePlan(prompt, {
-            model: fallbackModel,
-            timeout: config.timeouts.planGeneration,
-            cwd: ticketCwd,
-            verbose: this.verbose,
-          }, (text) => this.handleOutput(ticket, text));
+          result = await this.agent.generatePlan(
+            prompt,
+            {
+              model: fallbackModel,
+              timeout: config.timeouts.planGeneration,
+              cwd: ticketCwd,
+              verbose: this.verbose,
+            },
+            (text) => this.handleOutput(ticket, text),
+          );
         }
       }
     }
 
     if (!result.success) {
-      throw new Error(result.error ?? "Plan generation failed with unknown error");
+      throw new Error(
+        result.error ?? "Plan generation failed with unknown error",
+      );
     }
 
     if (!result.plan) {
@@ -959,7 +1197,9 @@ class OrchestratorImpl
         costUsd: result.costUsd,
         errorField: result.error,
       });
-      throw new Error("Plan generation returned empty content — Claude may have produced no output");
+      throw new Error(
+        "Plan generation returned empty content — Claude may have produced no output",
+      );
     }
 
     logger.info("Plan generated", { costUsd: result.costUsd });
@@ -969,7 +1209,7 @@ class OrchestratorImpl
   private async waitForApproval(
     ticket: Ticket,
     plan: string,
-    config: Config
+    config: Config,
   ): Promise<ApprovalResult> {
     if (config.autoApprove) {
       logger.info("Auto-approving plan");
@@ -1023,7 +1263,12 @@ class OrchestratorImpl
 
     this.emit("ticket:executing", ticket);
 
-    const prompt = this.buildExecutionPrompt(ticket, plan, resolvedImagePaths, imageWarnings);
+    const prompt = this.buildExecutionPrompt(
+      ticket,
+      plan,
+      resolvedImagePaths,
+      imageWarnings,
+    );
 
     if (this.dryRun) {
       logger.info("Dry run: skipping actual execution");
@@ -1031,21 +1276,26 @@ class OrchestratorImpl
       await this.saveTicketsFile();
       await markTicketCompleteInFile(this.ticketsFilePath, ticket.id);
       this.emit("ticket:completed", ticket);
-      this.multiplexer.broadcastStatus({
-        ticketId: ticket.id,
-        ticketTitle: ticket.title,
-        status: "completed",
-      }).catch(err => logger.warn("Failed to broadcast status", { error: String(err) }));
+      this.multiplexer
+        .broadcastStatus({
+          ticketId: ticket.id,
+          ticketTitle: ticket.title,
+          status: "completed",
+        })
+        .catch((err) =>
+          logger.warn("Failed to broadcast status", { error: String(err) }),
+        );
       return;
     }
 
     let retries = 0;
     const maxRetries = config.maxRetries;
-    const isAutonomous = (ticket.planMode ?? config.planMode) === false || config.autoApprove;
+    const isAutonomous =
+      (ticket.planMode ?? config.planMode) === false || config.autoApprove;
 
     while (retries <= maxRetries) {
       try {
-        const result = await claude.execute(
+        const result = await this.agent.execute(
           prompt,
           {
             model: config.model,
@@ -1058,22 +1308,29 @@ class OrchestratorImpl
             onEvent: (event) => this.handleClaudeEvent(ticket, event),
             onQuestion: (q) => this.handleQuestion(ticket, q, config, hooks),
             onOutput: (text) => this.handleOutput(ticket, text),
-          }
+          },
         );
 
         // Rate limit detection and automatic fallback
         if (
-          isRateLimitError({ success: result.success, error: result.error, costUsd: result.costUsd }) &&
+          isRateLimitError({
+            success: result.success,
+            error: result.error,
+            costUsd: result.costUsd,
+          }) &&
           shouldFallback(config.model, config.fallbackModel)
         ) {
-          logger.warn("Claude rate limit hit during execution, retrying with fallback", {
-            ticketId: ticket.id,
-            originalModel: config.model || "CLI default",
-            fallbackModel: config.fallbackModel,
-          });
+          logger.warn(
+            "Claude rate limit hit during execution, retrying with fallback",
+            {
+              ticketId: ticket.id,
+              originalModel: config.model || "CLI default",
+              fallbackModel: config.fallbackModel,
+            },
+          );
 
           // Retry with fallback model
-          const fallbackResult = await claude.execute(
+          const fallbackResult = await this.agent.execute(
             prompt,
             {
               model: config.fallbackModel,
@@ -1086,13 +1343,17 @@ class OrchestratorImpl
               onEvent: (event) => this.handleClaudeEvent(ticket, event),
               onQuestion: (q) => this.handleQuestion(ticket, q, config, hooks),
               onOutput: (text) => this.handleOutput(ticket, text),
-            }
+            },
           );
 
           // If fallback succeeds, complete the ticket and return
           if (fallbackResult.success) {
             if (fallbackResult.sessionId) {
-              await stateManager.saveSession(this.projectRoot, ticket.id, fallbackResult.sessionId);
+              await stateManager.saveSession(
+                this.projectRoot,
+                ticket.id,
+                fallbackResult.sessionId,
+              );
               await this.updateState({ sessionId: fallbackResult.sessionId });
             }
 
@@ -1106,36 +1367,58 @@ class OrchestratorImpl
                 cwd: effectiveCwd,
               });
               this.emit("ticket:completed", ticket);
-              this.multiplexer.broadcastStatus({
-                ticketId: ticket.id,
-                ticketTitle: ticket.title,
-                status: "completed",
-              }).catch(err => logger.warn("Failed to broadcast status", { error: String(err) }));
+              this.multiplexer
+                .broadcastStatus({
+                  ticketId: ticket.id,
+                  ticketTitle: ticket.title,
+                  status: "completed",
+                })
+                .catch((err) =>
+                  logger.warn("Failed to broadcast status", {
+                    error: String(err),
+                  }),
+                );
             }
             return;
           }
 
           // If fallback also hit rate limit, attempt wait-and-retry
-          if (isRateLimitError({ success: fallbackResult.success, error: fallbackResult.error, costUsd: fallbackResult.costUsd })) {
+          if (
+            isRateLimitError({
+              success: fallbackResult.success,
+              error: fallbackResult.error,
+              costUsd: fallbackResult.costUsd,
+            })
+          ) {
             const retryResult = await this.handleRateLimitWithRetry(
               ticket.id,
               config,
-              () => claude.execute(prompt, {
-                model: config.fallbackModel,
-                skipPermissions: isAutonomous || config.skipPermissions,
-                timeout: config.timeouts.execution,
-                cwd: effectiveCwd,
-                verbose: this.verbose,
-              }, {
-                onEvent: (event) => this.handleClaudeEvent(ticket, event),
-                onQuestion: (q) => this.handleQuestion(ticket, q, config, hooks),
-                onOutput: (text) => this.handleOutput(ticket, text),
-              }),
+              () =>
+                this.agent.execute(
+                  prompt,
+                  {
+                    model: config.fallbackModel,
+                    skipPermissions: isAutonomous || config.skipPermissions,
+                    timeout: config.timeouts.execution,
+                    cwd: effectiveCwd,
+                    verbose: this.verbose,
+                  },
+                  {
+                    onEvent: (event) => this.handleClaudeEvent(ticket, event),
+                    onQuestion: (q) =>
+                      this.handleQuestion(ticket, q, config, hooks),
+                    onOutput: (text) => this.handleOutput(ticket, text),
+                  },
+                ),
             );
 
             if (retryResult?.success) {
               if (retryResult.sessionId) {
-                await stateManager.saveSession(this.projectRoot, ticket.id, retryResult.sessionId);
+                await stateManager.saveSession(
+                  this.projectRoot,
+                  ticket.id,
+                  retryResult.sessionId,
+                );
                 await this.updateState({ sessionId: retryResult.sessionId });
               }
               if (!this.suppressCompletion) {
@@ -1148,11 +1431,17 @@ class OrchestratorImpl
                   cwd: effectiveCwd,
                 });
                 this.emit("ticket:completed", ticket);
-                this.multiplexer.broadcastStatus({
-                  ticketId: ticket.id,
-                  ticketTitle: ticket.title,
-                  status: "completed",
-                }).catch(err => logger.warn("Failed to broadcast status", { error: String(err) }));
+                this.multiplexer
+                  .broadcastStatus({
+                    ticketId: ticket.id,
+                    ticketTitle: ticket.title,
+                    status: "completed",
+                  })
+                  .catch((err) =>
+                    logger.warn("Failed to broadcast status", {
+                      error: String(err),
+                    }),
+                  );
               }
               return;
             }
@@ -1163,7 +1452,11 @@ class OrchestratorImpl
         }
 
         if (result.sessionId) {
-          await stateManager.saveSession(this.projectRoot, ticket.id, result.sessionId);
+          await stateManager.saveSession(
+            this.projectRoot,
+            ticket.id,
+            result.sessionId,
+          );
           await this.updateState({ sessionId: result.sessionId });
         }
 
@@ -1178,11 +1471,17 @@ class OrchestratorImpl
               cwd: effectiveCwd,
             });
             this.emit("ticket:completed", ticket);
-            this.multiplexer.broadcastStatus({
-              ticketId: ticket.id,
-              ticketTitle: ticket.title,
-              status: "completed",
-            }).catch(err => logger.warn("Failed to broadcast status", { error: String(err) }));
+            this.multiplexer
+              .broadcastStatus({
+                ticketId: ticket.id,
+                ticketTitle: ticket.title,
+                status: "completed",
+              })
+              .catch((err) =>
+                logger.warn("Failed to broadcast status", {
+                  error: String(err),
+                }),
+              );
           }
           return;
         }
@@ -1213,9 +1512,15 @@ class OrchestratorImpl
         // Delay between retries
         const retryPacing = this.resolvePacing(ticket, config);
         if (retryPacing.delayBetweenRetries) {
-          const proceeded = await this.applyDelay(retryPacing.delayBetweenRetries, "delayBetweenRetries", ticket.id);
+          const proceeded = await this.applyDelay(
+            retryPacing.delayBetweenRetries,
+            "delayBetweenRetries",
+            ticket.id,
+          );
           if (!proceeded) {
-            logger.info("Delay between retries interrupted", { ticketId: ticket.id });
+            logger.info("Delay between retries interrupted", {
+              ticketId: ticket.id,
+            });
             ticket.status = "failed";
             await this.saveTicketsFile();
             throw new Error("Retry delay interrupted by pause/stop");
@@ -1235,11 +1540,12 @@ class OrchestratorImpl
   ): Promise<void> {
     // Use provided ticketCwd or fall back to projectRoot
     const effectiveCwd = ticketCwd ?? this.projectRoot;
-    const isAutonomous = (ticket.planMode ?? config.planMode) === false || config.autoApprove;
+    const isAutonomous =
+      (ticket.planMode ?? config.planMode) === false || config.autoApprove;
     const currentModel = config.model;
     const fallbackModel = config.fallbackModel;
 
-    let result = await claude.resume(
+    let result = await this.agent.resume(
       sessionId,
       resumePrompt ?? "Continue from where you left off.",
       {
@@ -1253,12 +1559,16 @@ class OrchestratorImpl
         onEvent: (event) => this.handleClaudeEvent(ticket, event),
         onQuestion: (q) => this.handleQuestion(ticket, q, config, hooks),
         onOutput: (text) => this.handleOutput(ticket, text),
-      }
+      },
     );
 
     // Check for rate limit and attempt fallback if applicable
     if (
-      isRateLimitError({ success: result.success, error: result.error, costUsd: result.costUsd }) &&
+      isRateLimitError({
+        success: result.success,
+        error: result.error,
+        costUsd: result.costUsd,
+      }) &&
       shouldFallback(currentModel, fallbackModel)
     ) {
       logger.warn("Rate limit hit on resume, retrying with fallback", {
@@ -1268,7 +1578,7 @@ class OrchestratorImpl
         fallbackModel,
       });
 
-      result = await claude.resume(
+      result = await this.agent.resume(
         sessionId,
         resumePrompt ?? "Continue from where you left off.",
         {
@@ -1282,16 +1592,20 @@ class OrchestratorImpl
           onEvent: (event) => this.handleClaudeEvent(ticket, event),
           onQuestion: (q) => this.handleQuestion(ticket, q, config, hooks),
           onOutput: (text) => this.handleOutput(ticket, text),
-        }
+        },
       );
     }
 
     // If both primary and fallback hit rate limits, attempt wait-and-retry
-    if (!result.success && isRateLimitError({
-      success: result.success,
-      error: result.error,
-      costUsd: result.costUsd,
-    }) && config.rateLimitRetry.enabled) {
+    if (
+      !result.success &&
+      isRateLimitError({
+        success: result.success,
+        error: result.error,
+        costUsd: result.costUsd,
+      }) &&
+      config.rateLimitRetry.enabled
+    ) {
       const resetsAt = getLastRateLimitResetsAt();
       const waitCalc = calculateRateLimitWait({
         resetsAt,
@@ -1308,19 +1622,29 @@ class OrchestratorImpl
         });
 
         if (config.rateLimitRetry.notifyOnWait) {
-          this.multiplexer.broadcastStatus({
-            ticketId: ticket.id,
-            ticketTitle: ticket.title,
-            status: "waiting",
-            message: `Rate limit hit during session resume — waiting ${formatDuration(waitCalc.waitMs)} for reset`,
-          }).catch(err => logger.warn("Failed to broadcast rate limit wait status", { error: String(err) }));
+          this.multiplexer
+            .broadcastStatus({
+              ticketId: ticket.id,
+              ticketTitle: ticket.title,
+              status: "waiting",
+              message: `Rate limit hit during session resume — waiting ${formatDuration(waitCalc.waitMs)} for reset`,
+            })
+            .catch((err) =>
+              logger.warn("Failed to broadcast rate limit wait status", {
+                error: String(err),
+              }),
+            );
         }
 
-        const delayCompleted = await this.applyDelay(waitCalc.waitMs, "rateLimitRetry", ticket.id);
+        const delayCompleted = await this.applyDelay(
+          waitCalc.waitMs,
+          "rateLimitRetry",
+          ticket.id,
+        );
         clearRateLimitResetsAt();
 
         if (delayCompleted) {
-          result = await claude.resume(
+          result = await this.agent.resume(
             sessionId,
             resumePrompt ?? "Continue from where you left off.",
             {
@@ -1334,7 +1658,7 @@ class OrchestratorImpl
               onEvent: (event) => this.handleClaudeEvent(ticket, event),
               onQuestion: (q) => this.handleQuestion(ticket, q, config, hooks),
               onOutput: (text) => this.handleOutput(ticket, text),
-            }
+            },
           );
         }
       }
@@ -1351,11 +1675,15 @@ class OrchestratorImpl
           cwd: effectiveCwd,
         });
         this.emit("ticket:completed", ticket);
-        this.multiplexer.broadcastStatus({
-          ticketId: ticket.id,
-          ticketTitle: ticket.title,
-          status: "completed",
-        }).catch(err => logger.warn("Failed to broadcast status", { error: String(err) }));
+        this.multiplexer
+          .broadcastStatus({
+            ticketId: ticket.id,
+            ticketTitle: ticket.title,
+            status: "completed",
+          })
+          .catch((err) =>
+            logger.warn("Failed to broadcast status", { error: String(err) }),
+          );
       }
     } else {
       throw new Error(result.error ?? "Session resume failed");
@@ -1393,17 +1721,28 @@ class OrchestratorImpl
     try {
       for (let i = startIteration; i < maxIterations; i++) {
         if (this.pauseRequested || this.stopRequested) {
-          logger.info("Loop paused/stopped", { ticketId: ticket.id, iteration: i });
+          logger.info("Loop paused/stopped", {
+            ticketId: ticket.id,
+            iteration: i,
+          });
           // Persist loopState for resume
           await stateManager.update(this.projectRoot, {
-            loopState: { currentIteration: i, maxIterations, conditionMet: false },
+            loopState: {
+              currentIteration: i,
+              maxIterations,
+              conditionMet: false,
+            },
           });
           return;
         }
 
         // Persist loopState before each iteration
         await stateManager.update(this.projectRoot, {
-          loopState: { currentIteration: i, maxIterations, conditionMet: false },
+          loopState: {
+            currentIteration: i,
+            maxIterations,
+            conditionMet: false,
+          },
         });
 
         this.emit("loop:iteration-start", ticket, i, maxIterations);
@@ -1435,33 +1774,65 @@ class OrchestratorImpl
           }
         }
 
-        logger.info("Starting loop iteration", { ticketId: ticket.id, iteration: i, maxIterations });
+        logger.info("Starting loop iteration", {
+          ticketId: ticket.id,
+          iteration: i,
+          maxIterations,
+        });
 
         if (i === 0) {
           // First iteration: use executeTicket to create a new session
-          await this.executeTicket(ticket, plan, config, hooks, resolvedImagePaths, imageWarnings, effectiveCwd);
+          await this.executeTicket(
+            ticket,
+            plan,
+            config,
+            hooks,
+            resolvedImagePaths,
+            imageWarnings,
+            effectiveCwd,
+          );
         } else {
           // Subsequent iterations: resume existing session with iteration prompt
-          const sessionId = await stateManager.loadSession(this.projectRoot, ticket.id);
+          const sessionId = await stateManager.loadSession(
+            this.projectRoot,
+            ticket.id,
+          );
           if (!sessionId) {
-            throw new Error(`No session found for loop iteration ${i} of ticket ${ticket.id}`);
+            throw new Error(
+              `No session found for loop iteration ${i} of ticket ${ticket.id}`,
+            );
           }
 
-          const iterationPrompt = this.buildIterationPrompt(ticket, i, maxIterations);
-          await this.executeWithSession(ticket, sessionId, config, hooks, iterationPrompt, effectiveCwd);
+          const iterationPrompt = this.buildIterationPrompt(
+            ticket,
+            i,
+            maxIterations,
+          );
+          await this.executeWithSession(
+            ticket,
+            sessionId,
+            config,
+            hooks,
+            iterationPrompt,
+            effectiveCwd,
+          );
         }
 
         // Evaluate condition after each iteration
         let conditionResult: ConditionResult;
         try {
           const claudeRunner = async (prompt: string) => {
-            const result = await claude.runPrompt(prompt, {
+            const result = await this.agent.runPrompt(prompt, {
               model: config.model,
               cwd: effectiveCwd,
               timeout: 300000,
               verbose: this.verbose,
             });
-            return { success: result.success, output: result.output, error: result.error };
+            return {
+              success: result.success,
+              output: result.output,
+              error: result.error,
+            };
           };
 
           conditionResult = await evaluateCondition(
@@ -1472,7 +1843,7 @@ class OrchestratorImpl
               claudeRunner,
               cwd: effectiveCwd,
               timeout: config.timeouts.execution,
-            }
+            },
           );
         } catch (err) {
           const error = err instanceof Error ? err : new Error(String(err));
@@ -1497,7 +1868,10 @@ class OrchestratorImpl
         });
 
         if (conditionResult.met) {
-          logger.info("Loop condition met", { ticketId: ticket.id, iteration: i });
+          logger.info("Loop condition met", {
+            ticketId: ticket.id,
+            iteration: i,
+          });
           break;
         }
 
@@ -1511,9 +1885,15 @@ class OrchestratorImpl
         // Delay between loop iterations
         const iterPacing = this.resolvePacing(ticket, config);
         if (iterPacing.delayBetweenIterations) {
-          const proceeded = await this.applyDelay(iterPacing.delayBetweenIterations, "delayBetweenIterations", ticket.id);
+          const proceeded = await this.applyDelay(
+            iterPacing.delayBetweenIterations,
+            "delayBetweenIterations",
+            ticket.id,
+          );
           if (!proceeded) {
-            logger.info("Delay between iterations interrupted", { ticketId: ticket.id });
+            logger.info("Delay between iterations interrupted", {
+              ticketId: ticket.id,
+            });
             break;
           }
         }
@@ -1532,17 +1912,25 @@ class OrchestratorImpl
       cwd: effectiveCwd,
     });
     this.emit("ticket:completed", ticket);
-    this.multiplexer.broadcastStatus({
-      ticketId: ticket.id,
-      ticketTitle: ticket.title,
-      status: "completed",
-    }).catch(err => logger.warn("Failed to broadcast status", { error: String(err) }));
+    this.multiplexer
+      .broadcastStatus({
+        ticketId: ticket.id,
+        ticketTitle: ticket.title,
+        status: "completed",
+      })
+      .catch((err) =>
+        logger.warn("Failed to broadcast status", { error: String(err) }),
+      );
 
     // Clear loopState
     await stateManager.update(this.projectRoot, { loopState: null });
   }
 
-  private buildIterationPrompt(ticket: Ticket, iteration: number, maxIterations: number): string {
+  private buildIterationPrompt(
+    ticket: Ticket,
+    iteration: number,
+    maxIterations: number,
+  ): string {
     const loop = ticket.loop!;
     const parts = [
       `# Continue: ${ticket.title}`,
@@ -1568,33 +1956,55 @@ class OrchestratorImpl
   // Private: Event Handlers
   // ===========================================================================
 
-  private handleClaudeEvent(ticket: Ticket, event: { type: string; message?: string; toolName?: string }): void {
+  private handleClaudeEvent(
+    ticket: Ticket,
+    event: { type: string; message?: string; toolName?: string },
+  ): void {
     // Only log actionable events to reduce noise (assistant/user/system events are ~95% of volume)
-    if (event.type === 'tool_use' || event.type === 'tool_result' || event.type === 'error' || event.type === 'result') {
-      logger.debug("Claude event", { type: event.type, toolName: event.toolName });
+    if (
+      event.type === "tool_use" ||
+      event.type === "tool_result" ||
+      event.type === "error" ||
+      event.type === "result"
+    ) {
+      logger.debug("Claude event", {
+        type: event.type,
+        toolName: event.toolName,
+      });
     }
     const eventLine = `[${event.type}] ${event.message ?? ""}`;
     this.emit("ticket:output", ticket, eventLine);
-    this.emit("ticket:event", ticket, { type: event.type, toolName: event.toolName, message: event.message });
+    this.emit("ticket:event", ticket, {
+      type: event.type,
+      toolName: event.toolName,
+      message: event.message,
+    });
   }
 
   private async handleQuestion(
     ticket: Ticket,
     question: { id: string; text: string; options?: string[] },
     config: Config,
-    hooks?: Hooks
+    hooks?: Hooks,
   ): Promise<string> {
-    logger.info("Question from Claude", { question: question.text.slice(0, 100) });
+    logger.info("Question from Claude", {
+      question: question.text.slice(0, 100),
+    });
 
     this.emit("question", ticket, question.text);
 
     // Execute onQuestion hooks for prompt hints
-    const hookResults = await this.executeHooks(hooks, "onQuestion", {
-      ticketId: ticket.id,
-      ticketTitle: ticket.title,
-      question: question.text,
-      questionId: question.id,
-    }, { passivePrompts: true });
+    const hookResults = await this.executeHooks(
+      hooks,
+      "onQuestion",
+      {
+        ticketId: ticket.id,
+        ticketTitle: ticket.title,
+        question: question.text,
+        questionId: question.id,
+      },
+      { passivePrompts: true },
+    );
 
     // Check if any prompt hooks provide guidance
     const promptHints = hookResults
@@ -1608,22 +2018,24 @@ class OrchestratorImpl
     if (isAutonomous) {
       let autoAnswer: string;
       if (question.options && question.options.length > 0) {
-        const recommended = question.options.find(o =>
-          o.toLowerCase().includes('(recommended)')
+        const recommended = question.options.find((o) =>
+          o.toLowerCase().includes("(recommended)"),
         );
         autoAnswer = recommended ?? question.options[0];
       } else {
-        autoAnswer = 'use your best judgement';
+        autoAnswer = "use your best judgement";
       }
 
-      logger.info('Auto-answering question (autonomous mode)', {
+      logger.info("Auto-answering question (autonomous mode)", {
         ticketId: ticket.id,
         question: question.text.slice(0, 100),
         answer: autoAnswer,
-        reason: !usePlanMode ? 'planMode disabled' : 'autoApprove enabled',
+        reason: !usePlanMode ? "planMode disabled" : "autoApprove enabled",
       });
 
-      return promptHints ? `${autoAnswer}\n\nContext:\n${promptHints}` : autoAnswer;
+      return promptHints
+        ? `${autoAnswer}\n\nContext:\n${promptHints}`
+        : autoAnswer;
     }
 
     // Save pending question to state
@@ -1692,10 +2104,14 @@ class OrchestratorImpl
     // Validate dependencies
     const validation = validateTicketDependencies(this.ticketsFile.tickets);
     if (!validation.valid) {
-      throw new Error(`Invalid ticket dependencies:\n${validation.errors.join("\n")}`);
+      throw new Error(
+        `Invalid ticket dependencies:\n${validation.errors.join("\n")}`,
+      );
     }
 
-    logger.info("Loaded tickets file", { ticketCount: this.ticketsFile.tickets.length });
+    logger.info("Loaded tickets file", {
+      ticketCount: this.ticketsFile.tickets.length,
+    });
   }
 
   private async saveTicketsFile(): Promise<void> {
@@ -1704,7 +2120,7 @@ class OrchestratorImpl
     // For now, we only update status in the state file
     if (this.state && this.ticketsFile) {
       const currentTicket = this.ticketsFile.tickets.find(
-        (t) => t.id === this.state?.currentTicketId
+        (t) => t.id === this.state?.currentTicketId,
       );
       if (currentTicket) {
         await stateManager.update(this.projectRoot, {
@@ -1722,85 +2138,43 @@ class OrchestratorImpl
     hooks: Hooks | undefined,
     name: keyof Hooks,
     context: HookContext,
-    options?: { passivePrompts?: boolean }
+    options?: { passivePrompts?: boolean },
   ) {
     const allowShellHooks = this.ticketsFile?.config?.allowShellHooks ?? false;
     const config = this.ticketsFile?.config;
 
     // Build Claude runner for prompt hooks (unless passive mode for onQuestion)
-    const claudeRunner = options?.passivePrompts ? undefined : async (prompt: string) => {
-      const currentModel = config?.model;
-      const fallbackModel = config?.fallbackModel ?? "sonnet";
+    const claudeRunner = options?.passivePrompts
+      ? undefined
+      : async (prompt: string) => {
+          const currentModel = config?.model;
+          const fallbackModel = config?.fallbackModel ?? "sonnet";
 
-      let result = await claude.runPrompt(prompt, {
-        model: currentModel,
-        cwd: this.projectRoot,
-        timeout: 300000,
-        skipPermissions: config?.skipPermissions,
-        verbose: this.verbose,
-      });
-
-      // Check for rate limit and attempt fallback if applicable
-      if (
-        isRateLimitError({
-          success: result.success,
-          error: result.error,
-          costUsd: result.costUsd,
-          outputLength: result.output?.length,
-        }) &&
-        shouldFallback(currentModel, fallbackModel)
-      ) {
-        logger.warn('Rate limit hit in hook, retrying with fallback', {
-          promptLength: prompt.slice(0, 100),
-          originalModel: currentModel || 'CLI default',
-          fallbackModel,
-        });
-
-        result = await claude.runPrompt(prompt, {
-          model: fallbackModel,
-          cwd: this.projectRoot,
-          timeout: 300000,
-          skipPermissions: config?.skipPermissions,
-          verbose: this.verbose,
-        });
-      }
-
-      // If both primary and fallback hit rate limits, attempt wait-and-retry
-      if (!result.success && isRateLimitError({
-        success: result.success,
-        error: result.error,
-        costUsd: result.costUsd,
-        outputLength: result.output?.length,
-      }) && config?.rateLimitRetry?.enabled) {
-        const retryConfig = config.rateLimitRetry;
-        const resetsAt = getLastRateLimitResetsAt();
-        const waitCalc = calculateRateLimitWait({
-          resetsAt,
-          maxWaitTimeMs: retryConfig.maxWaitTime,
-          retryBufferMs: retryConfig.retryBuffer,
-          fallbackDelayMs: retryConfig.fallbackDelay,
-        });
-
-        if (waitCalc.shouldWait) {
-          logger.info("Rate limit retry (hook): waiting for reset", {
-            waitMs: waitCalc.waitMs,
-            reason: waitCalc.reason,
+          let result = await this.agent.runPrompt(prompt, {
+            model: currentModel,
+            cwd: this.projectRoot,
+            timeout: 300000,
+            skipPermissions: config?.skipPermissions,
+            verbose: this.verbose,
           });
 
-          if (retryConfig.notifyOnWait) {
-            this.multiplexer.broadcastStatus({
-              ticketId: context.ticketId ?? "hook",
-              ticketTitle: context.ticketTitle ?? "hook",
-              status: "waiting",
-              message: `Rate limit hit during hook — waiting ${formatDuration(waitCalc.waitMs)} for reset`,
-            }).catch(err => logger.warn("Failed to broadcast rate limit wait status", { error: String(err) }));
-          }
+          // Check for rate limit and attempt fallback if applicable
+          if (
+            isRateLimitError({
+              success: result.success,
+              error: result.error,
+              costUsd: result.costUsd,
+              outputLength: result.output?.length,
+            }) &&
+            shouldFallback(currentModel, fallbackModel)
+          ) {
+            logger.warn("Rate limit hit in hook, retrying with fallback", {
+              promptLength: prompt.slice(0, 100),
+              originalModel: currentModel || "CLI default",
+              fallbackModel,
+            });
 
-          const delayCompleted = await this.applyDelay(waitCalc.waitMs, "rateLimitRetry", context.ticketId);
-          clearRateLimitResetsAt();
-
-          if (delayCompleted) {
-            result = await claude.runPrompt(prompt, {
+            result = await this.agent.runPrompt(prompt, {
               model: fallbackModel,
               cwd: this.projectRoot,
               timeout: 300000,
@@ -1808,17 +2182,78 @@ class OrchestratorImpl
               verbose: this.verbose,
             });
           }
-        }
-      }
 
-      return {
-        success: result.success,
-        output: result.output,
-        error: result.error,
-      };
-    };
+          // If both primary and fallback hit rate limits, attempt wait-and-retry
+          if (
+            !result.success &&
+            isRateLimitError({
+              success: result.success,
+              error: result.error,
+              costUsd: result.costUsd,
+              outputLength: result.output?.length,
+            }) &&
+            config?.rateLimitRetry?.enabled
+          ) {
+            const retryConfig = config.rateLimitRetry;
+            const resetsAt = getLastRateLimitResetsAt();
+            const waitCalc = calculateRateLimitWait({
+              resetsAt,
+              maxWaitTimeMs: retryConfig.maxWaitTime,
+              retryBufferMs: retryConfig.retryBuffer,
+              fallbackDelayMs: retryConfig.fallbackDelay,
+            });
 
-    return hookExecutor.executeNamed(hooks, name, context, { allowShellHooks, claudeRunner });
+            if (waitCalc.shouldWait) {
+              logger.info("Rate limit retry (hook): waiting for reset", {
+                waitMs: waitCalc.waitMs,
+                reason: waitCalc.reason,
+              });
+
+              if (retryConfig.notifyOnWait) {
+                this.multiplexer
+                  .broadcastStatus({
+                    ticketId: context.ticketId ?? "hook",
+                    ticketTitle: context.ticketTitle ?? "hook",
+                    status: "waiting",
+                    message: `Rate limit hit during hook — waiting ${formatDuration(waitCalc.waitMs)} for reset`,
+                  })
+                  .catch((err) =>
+                    logger.warn("Failed to broadcast rate limit wait status", {
+                      error: String(err),
+                    }),
+                  );
+              }
+
+              const delayCompleted = await this.applyDelay(
+                waitCalc.waitMs,
+                "rateLimitRetry",
+                context.ticketId,
+              );
+              clearRateLimitResetsAt();
+
+              if (delayCompleted) {
+                result = await this.agent.runPrompt(prompt, {
+                  model: fallbackModel,
+                  cwd: this.projectRoot,
+                  timeout: 300000,
+                  skipPermissions: config?.skipPermissions,
+                  verbose: this.verbose,
+                });
+              }
+            }
+          }
+
+          return {
+            success: result.success,
+            output: result.output,
+            error: result.error,
+          };
+        };
+
+    return hookExecutor.executeNamed(hooks, name, context, {
+      allowShellHooks,
+      claudeRunner,
+    });
   }
 
   private findTicket(ticketId: string): Ticket | undefined {
@@ -1828,10 +2263,12 @@ class OrchestratorImpl
   private getProcessableTickets(tickets: Ticket[]): Ticket[] {
     const allTickets = [...tickets, ...this.dynamicTickets];
     const completed = new Set(
-      allTickets.filter((t) => t.status === "completed" || t.complete).map((t) => t.id)
+      allTickets
+        .filter((t) => t.status === "completed" || t.complete)
+        .map((t) => t.id),
     );
     const failed = new Set(
-      allTickets.filter((t) => t.status === "failed").map((t) => t.id)
+      allTickets.filter((t) => t.status === "failed").map((t) => t.id),
     );
 
     return allTickets.filter((ticket) => {
@@ -1868,7 +2305,12 @@ class OrchestratorImpl
     return `plan-${ticketId}-${randomBytes(4).toString("hex")}`;
   }
 
-  private buildPlanPrompt(ticket: Ticket, feedback?: string, resolvedImagePaths: string[] = [], imageWarnings: string[] = []): string {
+  private buildPlanPrompt(
+    ticket: Ticket,
+    feedback?: string,
+    resolvedImagePaths: string[] = [],
+    imageWarnings: string[] = [],
+  ): string {
     const parts = [
       `# Task: ${ticket.title}`,
       "",
@@ -1883,17 +2325,16 @@ class OrchestratorImpl
       }
     }
 
-    const imageSection = buildImagePromptSection(resolvedImagePaths, imageWarnings);
+    const imageSection = buildImagePromptSection(
+      resolvedImagePaths,
+      imageWarnings,
+    );
     if (imageSection) {
       parts.push("", imageSection);
     }
 
     if (feedback) {
-      parts.push(
-        "",
-        "## Previous Plan Feedback",
-        feedback,
-      );
+      parts.push("", "## Previous Plan Feedback", feedback);
     }
 
     parts.push(
@@ -1906,13 +2347,17 @@ class OrchestratorImpl
       "- Testing strategy",
       "- Potential risks or considerations",
       "",
-      "Do NOT implement yet - only plan."
+      "Do NOT implement yet - only plan.",
     );
 
     return parts.join("\n");
   }
 
-  private buildDirectExecutionPrompt(ticket: Ticket, resolvedImagePaths: string[] = [], imageWarnings: string[] = []): string {
+  private buildDirectExecutionPrompt(
+    ticket: Ticket,
+    resolvedImagePaths: string[] = [],
+    imageWarnings: string[] = [],
+  ): string {
     const parts = [
       `# Task: ${ticket.title}`,
       "",
@@ -1927,7 +2372,10 @@ class OrchestratorImpl
       }
     }
 
-    const imageSection = buildImagePromptSection(resolvedImagePaths, imageWarnings);
+    const imageSection = buildImagePromptSection(
+      resolvedImagePaths,
+      imageWarnings,
+    );
     if (imageSection) {
       parts.push("", imageSection);
     }
@@ -1935,7 +2383,12 @@ class OrchestratorImpl
     return parts.join("\n");
   }
 
-  private buildExecutionPrompt(ticket: Ticket, plan: string, resolvedImagePaths: string[] = [], imageWarnings: string[] = []): string {
+  private buildExecutionPrompt(
+    ticket: Ticket,
+    plan: string,
+    resolvedImagePaths: string[] = [],
+    imageWarnings: string[] = [],
+  ): string {
     const parts = [
       `# Execute Task: ${ticket.title}`,
       "",
@@ -1955,7 +2408,10 @@ class OrchestratorImpl
       }
     }
 
-    const imageSection = buildImagePromptSection(resolvedImagePaths, imageWarnings);
+    const imageSection = buildImagePromptSection(
+      resolvedImagePaths,
+      imageWarnings,
+    );
     if (imageSection) {
       parts.push("", imageSection);
     }
