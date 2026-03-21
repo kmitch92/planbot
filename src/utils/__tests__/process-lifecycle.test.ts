@@ -140,4 +140,31 @@ describe('ProcessRegistry', () => {
   it('getActiveCount returns 0 when empty', () => {
     expect(processRegistry.getActiveCount()).toBe(0);
   });
+
+  it('getActivePids returns empty array when no processes registered', () => {
+    expect(processRegistry.getActivePids()).toEqual([]);
+  });
+
+  it('getActivePids returns PID of registered process', () => {
+    const p = spawn('sleep', ['60'], { detached: true, stdio: 'ignore' });
+    procs.push(p);
+
+    processRegistry.register(p, 'test-pid');
+
+    expect(processRegistry.getActivePids()).toContain(p.pid);
+  }, 10_000);
+
+  it('getActivePids removes PID after process exits', async () => {
+    const p = spawn('sleep', ['60'], { detached: true, stdio: 'ignore' });
+    procs.push(p);
+
+    processRegistry.register(p, 'test-pid-exit');
+    const pid = p.pid!;
+
+    p.kill('SIGKILL');
+    await new Promise((resolve) => p.on('exit', resolve));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(processRegistry.getActivePids()).not.toContain(pid);
+  }, 10_000);
 });
