@@ -26,7 +26,8 @@ import { logger } from "../utils/logger.js";
 import { cleanupSessionLogs } from "../utils/session-report.js";
 import { isRateLimitError, shouldFallback } from "./rate-limit-detection.js";
 import { evaluateCondition, type ConditionResult } from "./loop-condition.js";
-import { createMemoryMonitor, getMemorySnapshot, type MemoryMonitor } from "../utils/memory-monitor.js";
+import { createMemoryMonitor, getMemorySnapshot, tryGarbageCollect, type MemoryMonitor } from "../utils/memory-monitor.js";
+import { processRegistry } from "../utils/process-lifecycle.js";
 
 // =============================================================================
 // Types and Interfaces
@@ -153,19 +154,30 @@ class OrchestratorImpl
       this.pauseRequested = false;
       this.stopRequested = false;
 
-      if (this.ticketsFile!.config.memoryCeilingMb > 0) {
+      const config = this.ticketsFile!.config;
+      if (config.memoryWarningMb > 0 || config.memoryCriticalMb > 0) {
         this.memoryMonitor = createMemoryMonitor();
-        this.memoryMonitor.start(
-          this.ticketsFile!.config.memoryCheckIntervalSec,
-          this.ticketsFile!.config.memoryCeilingMb,
-          (snapshot) => {
-            logger.warn('Memory ceiling hit, requesting pause', {
+        this.memoryMonitor.start({
+          intervalSec: config.memoryCheckIntervalSec,
+          warningMb: config.memoryWarningMb,
+          criticalMb: config.memoryCriticalMb,
+          onWarning: (snapshot) => {
+            logger.warn('Memory warning threshold hit', {
               rssMb: snapshot.rssMb.toFixed(1),
-              ceilingMb: this.ticketsFile!.config.memoryCeilingMb,
+              warningMb: config.memoryWarningMb,
             });
             this.pauseRequested = true;
-          }
-        );
+          },
+          onCritical: (snapshot) => {
+            logger.error('Memory CRITICAL - aborting current execution', {
+              rssMb: snapshot.rssMb.toFixed(1),
+              criticalMb: config.memoryCriticalMb,
+            });
+            claude.abort();
+            this.pauseRequested = true;
+          },
+          getChildPids: () => processRegistry.getActivePids(),
+        });
       }
 
       this.emit("queue:start");
@@ -349,8 +361,8 @@ class OrchestratorImpl
         break;
       }
 
-      if (this.memoryMonitor?.isAboveCeiling()) {
-        logger.warn('Memory above ceiling before processing next ticket, pausing queue');
+      if (this.memoryMonitor?.isAboveWarning()) {
+        logger.warn('Memory above warning threshold before processing next ticket, pausing queue');
         break;
       }
 
@@ -379,6 +391,9 @@ class OrchestratorImpl
           break;
         }
       }
+
+      // Between-ticket cleanup
+      await this.runBetweenTicketCleanup(config);
     }
 
     // Execute afterAll hooks if not stopped
@@ -393,6 +408,41 @@ class OrchestratorImpl
     } else {
       this.emit("queue:complete");
     }
+  }
+
+  private async runBetweenTicketCleanup(config: Config): Promise<void> {
+    const preSnap = getMemorySnapshot();
+    logger.info('Between-ticket cleanup: pre', { rssMb: preSnap.rssMb.toFixed(1) });
+
+    const gcRan = tryGarbageCollect();
+    if (gcRan) {
+      logger.info('GC completed between tickets');
+    }
+
+    if (config.sessionCleanup.enabled) {
+      try {
+        const result = await cleanupSessionLogs({
+          maxSizeMb: config.sessionCleanup.maxSizeMb,
+          maxAgeDays: config.sessionCleanup.maxAgeDays,
+        });
+        if (result.deletedFiles > 0) {
+          logger.info('Session logs cleaned between tickets', {
+            deletedFiles: result.deletedFiles,
+            freedMb: result.freedMb,
+          });
+        }
+      } catch (err) {
+        logger.warn('Session cleanup failed', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
+    const postSnap = getMemorySnapshot();
+    logger.info('Between-ticket cleanup: post', {
+      rssMb: postSnap.rssMb.toFixed(1),
+      deltaMb: (postSnap.rssMb - preSnap.rssMb).toFixed(1),
+    });
   }
 
   private async resumeFromState(): Promise<void> {
