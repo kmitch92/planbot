@@ -68,6 +68,7 @@ config:
   autoApprove: true
   continueOnError: true
   maxRetries: 3
+#  agent: claude-code               # AI agent: "claude-code" (default) or "opencode"
 #  allowShellHooks: true   # Enable shell-type hooks (security: disabled by default)
 #  model: sonnet
 #  fallbackModel: sonnet           # Model to use when rate limited (default: sonnet)
@@ -76,8 +77,10 @@ config:
 #  planMode: true                  # Generate plans before execution (default: true)
 #
 #  # --- Resource Limits ---
-#  memoryCeilingMb: 1024             # Pause queue when RSS exceeds this (MB). 0 = disabled (default: 1024)
+#  memoryWarningMb: 768              # Pause queue before next ticket when RSS exceeds this (MB). 0 = disabled (default: 768)
+#  memoryCriticalMb: 1024            # Abort current execution when RSS exceeds this (MB). 0 = disabled (default: 1024)
 #  memoryCheckIntervalSec: 30        # How often to check memory in seconds (default: 30)
+#  diskFloorMb: 500                  # Pause queue when free disk drops below this (MB). 0 = disabled (default: 500)
 #
 #  # --- Session Log Cleanup ---
 #  sessionCleanup:
