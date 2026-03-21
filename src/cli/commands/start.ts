@@ -1,6 +1,7 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
 import ora from 'ora';
+import { freemem, totalmem } from 'node:os';
 import { resolve } from 'node:path';
 import { readFile } from 'node:fs/promises';
 import { parse as parseYaml } from 'yaml';
@@ -341,6 +342,18 @@ export function createStartCommand(): Command {
         spinner.succeed('Ready to process tickets');
         const memSnap = getMemorySnapshot();
         logger.info('Startup memory', { rssMb: memSnap.rssMb.toFixed(1), heapUsedMb: memSnap.heapUsedMb.toFixed(1) });
+
+        const freeGb = freemem() / (1024 * 1024 * 1024);
+        const totalGb = totalmem() / (1024 * 1024 * 1024);
+        if (freeGb < 2) {
+          logger.warn('Low system memory', { freeGb: freeGb.toFixed(1), totalGb: totalGb.toFixed(1) });
+          console.log(chalk.yellow(`\n⚠ WARNING: Low system memory (${freeGb.toFixed(1)}GB free of ${totalGb.toFixed(1)}GB). OOM risk elevated.\n`));
+        }
+
+        if (typeof globalThis.gc !== 'function') {
+          logger.info('Tip: Launch with NODE_OPTIONS="--expose-gc" to enable GC between tickets');
+        }
+
         getSessionLogReport().then(r => reportSessionLogSize(r)).catch(() => {});
         console.log('');
 
