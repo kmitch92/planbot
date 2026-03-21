@@ -66,6 +66,7 @@ export interface ProcessRegistry {
   register(proc: ChildProcess, label: string): void;
   killAll(): Promise<void>;
   getActiveCount(): number;
+  getActivePids(): number[];
 }
 
 function createProcessRegistry(): ProcessRegistry {
@@ -95,6 +96,12 @@ function createProcessRegistry(): ProcessRegistry {
 
     getActiveCount(): number {
       return active.size;
+    },
+
+    getActivePids(): number[] {
+      return [...active]
+        .filter((p) => p.pid !== undefined)
+        .map((p) => p.pid!);
     },
   };
 }
