@@ -222,10 +222,28 @@ export const ConfigSchema = z.object({
   timeouts: TimeoutsSchema.default({}),
   /** Session log cleanup configuration */
   sessionCleanup: SessionCleanupSchema.default({}),
-  /** Memory ceiling in MB. When RSS exceeds this, queue pauses. 0 = disabled (default: 1024). */
-  memoryCeilingMb: z.number().int().nonnegative().default(1024),
+  /** @deprecated Use memoryWarningMb instead. Maps to memoryWarningMb when set. */
+  memoryCeilingMb: z.number().int().nonnegative().optional(),
+  /** Memory warning threshold in MB. When RSS exceeds this, queue pauses before next ticket. 0 = disabled (default: 768). */
+  memoryWarningMb: z.number().int().nonnegative().default(768),
+  /** Memory critical threshold in MB. When RSS exceeds this, current execution is aborted. 0 = disabled (default: 1024). */
+  memoryCriticalMb: z.number().int().nonnegative().default(1024),
   /** How often to check memory in seconds (default: 30) */
   memoryCheckIntervalSec: z.number().int().positive().default(30),
+}).transform((val) => {
+  // Map deprecated memoryCeilingMb to memoryWarningMb if warning was not explicitly provided
+  if (val.memoryCeilingMb !== undefined && val.memoryWarningMb === 768) {
+    return { ...val, memoryWarningMb: val.memoryCeilingMb };
+  }
+  return val;
+}).superRefine((val, ctx) => {
+  if (val.memoryWarningMb > 0 && val.memoryCriticalMb > 0 && val.memoryCriticalMb < val.memoryWarningMb) {
+    ctx.addIssue({
+      code: "custom",
+      message: "memoryCriticalMb must be >= memoryWarningMb when both are nonzero",
+      path: ["memoryCriticalMb"],
+    });
+  }
 });
 
 // =============================================================================
