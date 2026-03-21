@@ -761,3 +761,69 @@ describe("TicketSchema images field", () => {
     expect(result.success).toBe(false);
   });
 });
+
+// =============================================================================
+// Memory Threshold Config Tests
+// =============================================================================
+
+describe("Memory Threshold Config", () => {
+  it("defaults memoryWarningMb to 768 and memoryCriticalMb to 1024", () => {
+    const result = ConfigSchema.parse({});
+
+    expect(result.memoryWarningMb).toBe(768);
+    expect(result.memoryCriticalMb).toBe(1024);
+  });
+
+  it("accepts explicit memoryWarningMb and memoryCriticalMb values", () => {
+    const result = ConfigSchema.parse({
+      memoryWarningMb: 512,
+      memoryCriticalMb: 800,
+    });
+
+    expect(result.memoryWarningMb).toBe(512);
+    expect(result.memoryCriticalMb).toBe(800);
+  });
+
+  it("maps deprecated memoryCeilingMb to memoryWarningMb", () => {
+    const result = ConfigSchema.parse({
+      memoryCeilingMb: 600,
+    });
+
+    expect(result.memoryWarningMb).toBe(600);
+  });
+
+  it("rejects memoryCriticalMb lower than memoryWarningMb when both are nonzero", () => {
+    const result = ConfigSchema.safeParse({
+      memoryWarningMb: 1000,
+      memoryCriticalMb: 500,
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it("allows both thresholds set to zero (disabled)", () => {
+    const result = ConfigSchema.safeParse({
+      memoryWarningMb: 0,
+      memoryCriticalMb: 0,
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.memoryWarningMb).toBe(0);
+      expect(result.data.memoryCriticalMb).toBe(0);
+    }
+  });
+
+  it("allows zero memoryWarningMb with nonzero memoryCriticalMb", () => {
+    const result = ConfigSchema.safeParse({
+      memoryWarningMb: 0,
+      memoryCriticalMb: 500,
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.memoryWarningMb).toBe(0);
+      expect(result.data.memoryCriticalMb).toBe(500);
+    }
+  });
+});
