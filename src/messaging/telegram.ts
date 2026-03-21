@@ -137,6 +137,7 @@ const STATUS_EMOJIS: Record<StatusMessage["status"], string> = {
   completed: "\u2705",
   failed: "\u274C",
   skipped: "\u23ED\uFE0F",
+  waiting: "\u23F3",
 };
 
 const BASE_BACKOFF = 3000;

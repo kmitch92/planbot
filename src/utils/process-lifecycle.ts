@@ -17,7 +17,7 @@ export function appendBounded(existing: string, text: string, maxLen: number): s
  */
 export function killWithTimeout(proc: ChildProcess, gracePeriodMs = 5000): Promise<void> {
   return new Promise<void>((resolve) => {
-    if (proc.exitCode !== null) {
+    if (proc.exitCode !== null || proc.signalCode !== null) {
       resolve();
       return;
     }

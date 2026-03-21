@@ -1,38 +1,5 @@
-import { Command } from 'commander';
-import chalk from 'chalk';
-import ora from 'ora';
-import { join } from 'node:path';
-import { stateManager } from '../../core/state.js';
-import { fileExists, writeTextFile } from '../../utils/fs.js';
-import { logger } from '../../utils/logger.js';
-
-// =============================================================================
-// Templates
-// =============================================================================
-
-export const BASIC_TEMPLATE = `# Planbot Tickets
-# Run \`planbot start --help\` for CLI options
-
-tickets:
-  - id: example-001                # Unique identifier (required)
-    title: Example Ticket          # Short title, max 200 chars (required)
-    description: |                 # Detailed work description (required)
-      Describe what needs to be done here.
-      Be specific about files, expected behavior, and constraints.
-    priority: 1                    # Higher = more urgent (default: 0)
-    planMode: false                # Skip plan generation, execute directly (default: true)
-    acceptanceCriteria:            # Completion criteria (optional)
-      - Criterion 1
-      - Criterion 2
-    # images:                      # Attached screenshots (optional)
-    #   - .planbot/assets/example-001/screenshot.png
-    # dependencies: [other-id]    # IDs of tickets that must complete first
-    # metadata:                    # Arbitrary key-value data
-    #   estimate: 2h
-`;
-
-export const ADVANCED_TEMPLATE = `# Planbot Tickets
-# Run \`planbot start --help\` for CLI options
+# Planbot Tickets
+# Run `planbot start --help` for CLI options
 
 # =============================================================================
 # Hooks — run commands or prompts at lifecycle events
@@ -114,20 +81,20 @@ config:
 #  # Telegram:
 #  messaging:
 #    provider: telegram
-#    botToken: \${TELEGRAM_BOT_TOKEN}
-#    chatId: \${TELEGRAM_CHAT_ID}
+#    botToken: ${TELEGRAM_BOT_TOKEN}
+#    chatId: ${TELEGRAM_CHAT_ID}
 #
 #  # Slack:
 #  # messaging:
 #  #   provider: slack
-#  #   botToken: \${SLACK_BOT_TOKEN}
-#  #   appToken: \${SLACK_APP_TOKEN}
+#  #   botToken: ${SLACK_BOT_TOKEN}
+#  #   appToken: ${SLACK_APP_TOKEN}
 #  #   channel: "#planbot"
 #
 #  # Discord:
 #  # messaging:
 #  #   provider: discord
-#  #   botToken: \${DISCORD_BOT_TOKEN}
+#  #   botToken: ${DISCORD_BOT_TOKEN}
 #  #   channelId: "123456789"
 #
 #  # --- Webhook Server (for external integrations) ---
@@ -135,7 +102,7 @@ config:
 #    enabled: true
 #    port: 3847
 #    path: /planbot/webhook
-#    secret: \${WEBHOOK_SECRET}     # Optional HMAC secret
+#    secret: ${WEBHOOK_SECRET}     # Optional HMAC secret
 #    cors: false
 
 hooks:
@@ -378,67 +345,3 @@ tickets:
   #       type: shell
   #       command: npm run build && npm test
   #     maxIterations: 10
-`;
-
-// =============================================================================
-// Command Implementation
-// =============================================================================
-
-export function createInitCommand(): Command {
-  return new Command('init')
-    .description('Initialize planbot in the current directory')
-    .option('--simple', 'Use simple template without hooks or messaging config')
-    .option('--force', 'Overwrite existing configuration')
-    .action(async (options: { simple?: boolean; force?: boolean }) => {
-      const cwd = process.cwd();
-      const planbotDir = join(cwd, '.planbot');
-      const ticketsPath = join(cwd, 'tickets.yaml');
-
-      const spinner = ora('Initializing planbot...').start();
-
-      try {
-        // Check if already initialized
-        const planbotExists = await fileExists(planbotDir);
-        const ticketsExist = await fileExists(ticketsPath);
-
-        if ((planbotExists || ticketsExist) && !options.force) {
-          spinner.fail('Planbot is already initialized in this directory');
-          console.log(chalk.yellow('\nUse --force to overwrite existing configuration'));
-          process.exit(1);
-        }
-
-        // Initialize .planbot directory
-        await stateManager.init(cwd);
-        spinner.text = 'Created .planbot directory...';
-
-        // Write tickets template
-        const template = options.simple ? BASIC_TEMPLATE : ADVANCED_TEMPLATE;
-        await writeTextFile(ticketsPath, template);
-        spinner.text = 'Created tickets.yaml...';
-
-        spinner.succeed('Planbot initialized successfully');
-
-        console.log('\n' + chalk.bold('Next steps:'));
-        console.log(chalk.dim('  1. Edit tickets.yaml to define your tickets'));
-        console.log(chalk.dim('  2. Run: planbot start tickets.yaml'));
-        console.log(chalk.dim('  3. Approve plans and monitor progress'));
-
-        if (!options.simple) {
-          console.log('\n' + chalk.yellow('Note: ') + 'Template includes hook configurations.');
-          console.log(chalk.dim('  See comments in tickets.yaml for setup instructions.'));
-        }
-
-        console.log('\n' + chalk.dim('Created files:'));
-        console.log(chalk.dim(`  - ${ticketsPath}`));
-        console.log(chalk.dim(`  - ${planbotDir}/`));
-
-        logger.debug('Planbot initialized', { cwd, simple: options.simple });
-      } catch (err) {
-        spinner.fail('Failed to initialize planbot');
-        const message = err instanceof Error ? err.message : String(err);
-        console.error(chalk.red(`\nError: ${message}`));
-        logger.error('Init failed', { error: message });
-        process.exit(1);
-      }
-    });
-}

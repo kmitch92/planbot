@@ -392,6 +392,17 @@ function createHookExecutor(): HookExecutor {
       const results: HookResult[] = [];
 
       for (const action of hook) {
+        // Check `every` frequency control
+        if (action.every !== undefined && context.iteration !== undefined) {
+          if ((context.iteration + 1) % action.every !== 0) {
+            logger.debug("Skipping hook action due to every frequency", {
+              every: action.every,
+              iteration: context.iteration,
+            });
+            continue;
+          }
+        }
+
         const result = await this.executeAction(action, context, options);
         results.push(result);
 

@@ -12,6 +12,9 @@ import { createMultiplexer } from '../../messaging/index.js';
 import { createTerminalProvider } from '../../messaging/terminal.js';
 import { fileExists } from '../../utils/fs.js';
 import { logger } from '../../utils/logger.js';
+import { checkStalePid, writePidFile, removePidFile } from '../../utils/pid.js';
+import { processRegistry } from '../../utils/process-lifecycle.js';
+import { runStartupCleanup } from '../../utils/session-report.js';
 
 // =============================================================================
 // Types
@@ -25,12 +28,14 @@ interface ResumeOptions {
 // Graceful Shutdown Handler
 // =============================================================================
 
-function setupShutdownHandler(orchestrator: Orchestrator): void {
+function setupShutdownHandler(orchestrator: Orchestrator, pidPath: string): void {
   let shuttingDown = false;
 
   const shutdown = async (signal: string) => {
     if (shuttingDown) {
       console.log(chalk.yellow('\nForce quitting...'));
+      await processRegistry.killAll();
+      await logger.disableFileLogging();
       process.exit(1);
     }
 
@@ -39,11 +44,16 @@ function setupShutdownHandler(orchestrator: Orchestrator): void {
 
     try {
       await orchestrator.stop();
+      await processRegistry.killAll();
+      removePidFile(pidPath);
+      await logger.disableFileLogging();
       console.log(chalk.green('Stopped. Resume with: planbot resume'));
       process.exit(0);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       console.error(chalk.red(`Error during shutdown: ${message}`));
+      await processRegistry.killAll();
+      await logger.disableFileLogging();
       process.exit(1);
     }
   };
@@ -77,8 +87,31 @@ export function createResumeCommand(): Command {
         const state = await stateManager.load(cwd);
         spinner.text = 'Loading saved state...';
 
+        // Crash recovery detection
+        const crashRecovered = await stateManager.recoverFromCrash(cwd);
+        if (crashRecovered) {
+          logger.info('Recovered from previous crash — pauseRequested reset');
+        }
+
+        const currentState = crashRecovered ? await stateManager.load(cwd) : state;
+
+        // Enable file logging
+        logger.enableFileLogging(stateManager.getPaths(cwd).logs);
+
+        // Run startup cleanup (non-blocking)
+        runStartupCleanup().catch(() => {});
+
+        // PID file guard
+        const pidPath = stateManager.getPaths(cwd).pid;
+        const stalePid = checkStalePid(pidPath);
+        if (stalePid !== null) {
+          spinner.fail(`Another planbot instance is running (PID ${stalePid}). Exiting.`);
+          process.exit(1);
+        }
+        writePidFile(pidPath);
+
         // Check if there's anything to resume
-        if (state.currentPhase === 'idle' && !state.currentTicketId) {
+        if (currentState.currentPhase === 'idle' && !currentState.currentTicketId) {
           spinner.info('No active work to resume');
           console.log(chalk.dim('\nRun "planbot start" to begin processing.'));
           process.exit(0);
@@ -145,17 +178,18 @@ export function createResumeCommand(): Command {
         setupEventHandlers(orchestrator, spinner);
 
         // Set up shutdown handler
-        setupShutdownHandler(orchestrator);
+        setupShutdownHandler(orchestrator, pidPath);
 
         spinner.succeed('State loaded');
         console.log('');
 
         // Display resume info
-        displayResumeInfo(state);
+        displayResumeInfo(currentState);
 
         // Resume processing
         console.log(chalk.bold('\nResuming queue processing...\n'));
         await orchestrator.resume();
+        removePidFile(pidPath);
 
       } catch (err) {
         spinner.fail('Failed to resume');

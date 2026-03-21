@@ -187,6 +187,54 @@ export async function cleanupSessionLogs(options: {
   return { deletedFiles, freedMb };
 }
 
+export interface StartupCleanupOptions {
+  enabled?: boolean;
+  maxSizeMb?: number;
+  maxAgeDays?: number;
+}
+
+export async function runStartupCleanup(options: StartupCleanupOptions = {}): Promise<void> {
+  const { enabled = true, maxSizeMb = 200, maxAgeDays = 7 } = options;
+
+  if (!enabled) {
+    logger.debug('Startup cleanup disabled');
+    return;
+  }
+
+  try {
+    // Clean ~/.claude/debug/ (more aggressive: 3 days, 100MB)
+    const debugPath = join(homedir(), '.claude', 'debug');
+    const debugResult = await cleanupSessionLogs({
+      basePath: debugPath,
+      maxAgeDays: 3,
+      maxSizeMb: 100,
+    });
+    if (debugResult.deletedFiles > 0) {
+      logger.info('Startup debug cleanup', {
+        deletedFiles: debugResult.deletedFiles,
+        freedMb: debugResult.freedMb.toFixed(1),
+      });
+    }
+
+    // Clean ~/.claude/projects/ with configured values
+    const projectsResult = await cleanupSessionLogs({
+      maxAgeDays,
+      maxSizeMb,
+    });
+    if (projectsResult.deletedFiles > 0) {
+      logger.info('Startup session cleanup', {
+        deletedFiles: projectsResult.deletedFiles,
+        freedMb: projectsResult.freedMb.toFixed(1),
+      });
+    }
+  } catch (err) {
+    // Non-fatal — log and continue
+    logger.warn('Startup cleanup failed', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
 export function reportSessionLogSize(
   report: SessionLogReport,
   warningThresholdMb: number = 500,

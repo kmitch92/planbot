@@ -152,6 +152,8 @@ tickets: []
     multiplexer = createMockMultiplexer();
 
     vi.clearAllMocks();
+    mockMemoryMonitor.isAboveWarning.mockReturnValue(false);
+    mockMemoryMonitor.isAboveCeiling.mockReturnValue(false);
   });
 
   afterEach(async () => {
@@ -822,6 +824,108 @@ tickets:
       expect(mockMemoryMonitor.isAboveWarning).toHaveBeenCalled();
       expect(processedTickets).toContain("warn-check-1");
       expect(processedTickets).not.toContain("warn-check-2");
+    });
+  });
+
+  describe("dependency chain re-evaluation", () => {
+    it("should recognize YAML-persisted complete: true tickets as satisfied dependencies", async () => {
+      const { claude } = await import("../claude.js");
+      const mockedClaude = vi.mocked(claude);
+
+      mockedClaude.execute.mockResolvedValue({
+        success: true,
+        sessionId: "mock-session-id",
+      });
+
+      const ticketsWithCompleteDep = `
+config:
+  autoApprove: true
+tickets:
+  - id: ticket-a
+    title: Ticket A
+    description: Previously completed ticket persisted in YAML
+    complete: true
+  - id: ticket-b
+    title: Ticket B
+    description: Depends on ticket-a which is complete via YAML flag
+    status: pending
+    complete: false
+    dependencies:
+      - ticket-a
+`;
+      await writeFile(ticketsFilePath, ticketsWithCompleteDep);
+
+      const orchestrator = createOrchestrator({
+        projectRoot: testDir,
+        ticketsFile: ticketsFilePath,
+        multiplexer,
+      });
+
+      const startedTicketIds: string[] = [];
+      orchestrator.on("ticket:start", (ticket) => {
+        startedTicketIds.push(ticket.id);
+      });
+
+      await orchestrator.start();
+
+      expect(startedTicketIds).toContain("ticket-b");
+    });
+
+    it("should process all tickets in a dependency chain, not just the initially unblocked ones", async () => {
+      const { claude } = await import("../claude.js");
+      const mockedClaude = vi.mocked(claude);
+
+      mockedClaude.generatePlan.mockResolvedValue({
+        success: true,
+        plan: "Mock plan",
+        costUsd: 0.01,
+      });
+
+      mockedClaude.execute.mockResolvedValue({
+        success: true,
+        sessionId: "mock-session-id",
+      });
+
+      const ticketsWithDeps = `
+config:
+  autoApprove: true
+tickets:
+  - id: ticket-a
+    title: Ticket A
+    description: First ticket with no dependencies
+    status: pending
+  - id: ticket-b
+    title: Ticket B
+    description: Second ticket depends on A
+    status: pending
+    dependencies:
+      - ticket-a
+  - id: ticket-c
+    title: Ticket C
+    description: Third ticket depends on B
+    status: pending
+    dependencies:
+      - ticket-b
+`;
+      await writeFile(ticketsFilePath, ticketsWithDeps);
+
+      const orchestrator = createOrchestrator({
+        projectRoot: testDir,
+        ticketsFile: ticketsFilePath,
+        multiplexer,
+      });
+
+      const startedTicketIds: string[] = [];
+      orchestrator.on("ticket:start", (ticket) => {
+        startedTicketIds.push(ticket.id);
+      });
+
+      await orchestrator.start();
+
+      expect(startedTicketIds).toContain("ticket-a");
+      expect(startedTicketIds).toContain("ticket-b");
+      expect(startedTicketIds).toContain("ticket-c");
+      expect(startedTicketIds).toHaveLength(3);
     });
   });
 });

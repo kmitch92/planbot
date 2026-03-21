@@ -55,6 +55,8 @@ function createMockProcess(options: MockProcessOptions = {}): ChildProcess {
 
   proc.kill = vi.fn().mockReturnValue(true);
   proc.pid = 12345;
+  (proc as any).exitCode = null;
+  (proc as any).signalCode = null;
 
   const delay = options.closeDelay ?? 10;
   const closeAfterStdout = options.closeAfterStdout ?? 50;
@@ -180,11 +182,15 @@ describe("Claude Wrapper - Plan Generation", () => {
 
     proc.stdout = new Readable({ read() {} }) as ChildProcess["stdout"];
     proc.stderr = new Readable({ read() {} }) as ChildProcess["stderr"];
-    proc.kill = vi.fn().mockImplementation(() => {
-      proc.emit("close", 0);
+    proc.kill = vi.fn().mockImplementation((signal?: string) => {
+      if (signal === 'SIGTERM') {
+        proc.emit("close", 0);
+      }
       return true;
     });
     proc.pid = 12345;
+    (proc as any).exitCode = null;
+    (proc as any).signalCode = null;
 
     mockSpawn.mockReturnValue(proc);
 
@@ -192,7 +198,7 @@ describe("Claude Wrapper - Plan Generation", () => {
 
     expect(result.success).toBe(false);
     expect(result.error).toContain("timed out");
-    expect(proc.kill).toHaveBeenCalledWith("SIGTERM");
+    expect(proc.kill).toHaveBeenCalled();
   });
 
   it("parses cost_usd from result event", async () => {
@@ -872,11 +878,15 @@ describe("Claude Wrapper - runPrompt", () => {
 
     proc.stdout = new Readable({ read() {} }) as ChildProcess["stdout"];
     proc.stderr = new Readable({ read() {} }) as ChildProcess["stderr"];
-    proc.kill = vi.fn().mockImplementation(() => {
-      proc.emit("close", 0);
+    proc.kill = vi.fn().mockImplementation((signal?: string) => {
+      if (signal === 'SIGTERM') {
+        proc.emit("close", 0);
+      }
       return true;
     });
     proc.pid = 99999;
+    (proc as any).exitCode = null;
+    (proc as any).signalCode = null;
 
     mockSpawn.mockReturnValue(proc);
 

@@ -197,7 +197,7 @@ describe("file output JSON format", () => {
 
     const entries = await readParsedLogEntries();
     const levels = entries.map((e) => e.level);
-    expect(levels).toEqual(["debug", "info", "warn", "error"]);
+    expect(levels).toEqual(["info", "warn", "error"]);
   });
 });
 

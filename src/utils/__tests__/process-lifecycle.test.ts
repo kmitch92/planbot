@@ -56,7 +56,7 @@ describe('killWithTimeout', () => {
 
     await killWithTimeout(proc, 2000);
 
-    expect(proc.killed).toBe(true);
+    expect(proc.exitCode !== null || proc.signalCode !== null).toBe(true);
   }, 10_000);
 
   it('escalates to SIGKILL when process ignores SIGTERM', async () => {
@@ -72,7 +72,7 @@ describe('killWithTimeout', () => {
     const elapsed = Date.now() - start;
 
     expect(elapsed).toBeGreaterThanOrEqual(400);
-    expect(proc.exitCode).not.toBeNull();
+    expect(proc.exitCode !== null || proc.signalCode !== null).toBe(true);
   }, 10_000);
 
   it('resolves immediately if process is already dead', async () => {
@@ -132,8 +132,8 @@ describe('ProcessRegistry', () => {
 
     await processRegistry.killAll();
 
-    expect(p1.exitCode).not.toBeNull();
-    expect(p2.exitCode).not.toBeNull();
+    expect(p1.exitCode !== null || p1.signalCode !== null).toBe(true);
+    expect(p2.exitCode !== null || p2.signalCode !== null).toBe(true);
     expect(processRegistry.getActiveCount()).toBe(0);
   }, 10_000);
 
