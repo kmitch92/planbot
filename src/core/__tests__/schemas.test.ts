@@ -274,12 +274,20 @@ describe("ConfigSchema", () => {
     expect(result.success).toBe(false);
   });
 
-  it("rejects invalid model values", () => {
+  it("rejects empty string model values", () => {
     const result = ConfigSchema.safeParse({
-      model: "invalid-model",
+      model: "",
     });
 
     expect(result.success).toBe(false);
+  });
+
+  it("accepts arbitrary non-empty model strings for opencode providers", () => {
+    const result = ConfigSchema.safeParse({
+      model: "anthropic/claude-sonnet-4-5",
+    });
+
+    expect(result.success).toBe(true);
   });
 
   it("rejects negative retry count", () => {
