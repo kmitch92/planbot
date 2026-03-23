@@ -23,7 +23,7 @@ import {
   ImagePathSchema,
   SUPPORTED_IMAGE_EXTENSIONS,
   MAX_IMAGES_PER_TICKET,
-  ProviderSchema,
+  TicketsFileSchema,
 } from "../schemas.js";
 
 // =============================================================================
@@ -275,12 +275,20 @@ describe("ConfigSchema", () => {
     expect(result.success).toBe(false);
   });
 
-  it("rejects invalid model values", () => {
+  it("rejects empty string model values", () => {
     const result = ConfigSchema.safeParse({
-      model: "invalid-model",
+      model: "",
     });
 
     expect(result.success).toBe(false);
+  });
+
+  it("accepts arbitrary non-empty model strings for opencode providers", () => {
+    const result = ConfigSchema.safeParse({
+      model: "anthropic/claude-sonnet-4-5",
+    });
+
+    expect(result.success).toBe(true);
   });
 
   it("rejects negative retry count", () => {
@@ -764,80 +772,200 @@ describe("TicketSchema images field", () => {
 });
 
 // =============================================================================
-// Provider Schema Tests
+// Memory Threshold Config Tests
 // =============================================================================
 
-describe("ProviderSchema", () => {
-  it("defaults provider to claude when config omits provider field", () => {
+describe("Memory Threshold Config", () => {
+  it("defaults memoryWarningMb to 6144 and memoryCriticalMb to 8192", () => {
     const result = ConfigSchema.parse({});
 
-    expect(result.provider).toBe("claude");
+    expect(result.memoryWarningMb).toBe(6144);
+    expect(result.memoryCriticalMb).toBe(8192);
   });
 
-  it("accepts explicit provider claude", () => {
-    const result = ConfigSchema.safeParse({ provider: "claude" });
+  it("accepts explicit memoryWarningMb and memoryCriticalMb values", () => {
+    const result = ConfigSchema.parse({
+      memoryWarningMb: 512,
+      memoryCriticalMb: 800,
+    });
 
-    expect(result.success).toBe(true);
-    if (result.success) {
-      expect(result.data.provider).toBe("claude");
-    }
+    expect(result.memoryWarningMb).toBe(512);
+    expect(result.memoryCriticalMb).toBe(800);
   });
 
-  it("rejects invalid provider value", () => {
-    const result = ConfigSchema.safeParse({ provider: "invalid" });
+  it("maps deprecated memoryCeilingMb to memoryWarningMb", () => {
+    const result = ConfigSchema.parse({
+      memoryCeilingMb: 600,
+    });
+
+    expect(result.memoryWarningMb).toBe(600);
+  });
+
+  it("rejects memoryCriticalMb lower than memoryWarningMb when both are nonzero", () => {
+    const result = ConfigSchema.safeParse({
+      memoryWarningMb: 1000,
+      memoryCriticalMb: 500,
+    });
 
     expect(result.success).toBe(false);
   });
 
-  it("rejects unsupported provider codex", () => {
-    const result = ConfigSchema.safeParse({ provider: "codex" });
+  it("allows both thresholds set to zero (disabled)", () => {
+    const result = ConfigSchema.safeParse({
+      memoryWarningMb: 0,
+      memoryCriticalMb: 0,
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.memoryWarningMb).toBe(0);
+      expect(result.data.memoryCriticalMb).toBe(0);
+    }
+  });
+
+  it("allows zero memoryWarningMb with nonzero memoryCriticalMb", () => {
+    const result = ConfigSchema.safeParse({
+      memoryWarningMb: 0,
+      memoryCriticalMb: 500,
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.memoryWarningMb).toBe(0);
+      expect(result.data.memoryCriticalMb).toBe(500);
+    }
+  });
+});
+
+// =============================================================================
+// maxClaudeHeapMb Config Tests
+// =============================================================================
+
+describe("maxClaudeHeapMb Config", () => {
+  it("defaults to 4096 when not provided", () => {
+    const result = ConfigSchema.parse({});
+
+    expect(result.maxClaudeHeapMb).toBe(4096);
+  });
+
+  it("accepts explicit value", () => {
+    const result = ConfigSchema.parse({
+      maxClaudeHeapMb: 8192,
+    });
+
+    expect(result.maxClaudeHeapMb).toBe(8192);
+  });
+
+  it("rejects zero", () => {
+    const result = ConfigSchema.safeParse({
+      maxClaudeHeapMb: 0,
+    });
 
     expect(result.success).toBe(false);
   });
 
-  it("validates ProviderSchema enum directly", () => {
-    expect(ProviderSchema.safeParse("claude").success).toBe(true);
-    expect(ProviderSchema.safeParse("invalid").success).toBe(false);
-    expect(ProviderSchema.safeParse("").success).toBe(false);
+  it("rejects negative numbers", () => {
+    const result = ConfigSchema.safeParse({
+      maxClaudeHeapMb: -1024,
+    });
+
+    expect(result.success).toBe(false);
+  });
+});
+
+// =============================================================================
+// systemAvailableMinMb Config Tests
+// =============================================================================
+
+describe("systemAvailableMinMb Config", () => {
+  it("defaults to 2048 when not provided", () => {
+    const result = ConfigSchema.parse({});
+
+    expect(result.systemAvailableMinMb).toBe(2048);
   });
 
-  it("accepts all model values alongside provider field", () => {
-    const models = ["sonnet", "opus", "haiku"] as const;
+  it("accepts explicit value", () => {
+    const result = ConfigSchema.parse({
+      systemAvailableMinMb: 4096,
+    });
 
-    for (const model of models) {
-      const result = ConfigSchema.safeParse({ provider: "claude", model });
-
-      expect(result.success).toBe(true);
-      if (result.success) {
-        expect(result.data.provider).toBe("claude");
-        expect(result.data.model).toBe(model);
-      }
-    }
+    expect(result.systemAvailableMinMb).toBe(4096);
   });
 
-  it("parses full tickets file with provider field", () => {
-    const input = {
-      config: {
-        provider: "claude",
-        model: "sonnet",
-        maxBudgetPerTicket: 5,
-      },
-      tickets: [
-        {
-          id: "TICKET-001",
-          title: "Test ticket",
-          description: "Test description",
-        },
-      ],
-    };
+  it("accepts 0 to disable the check", () => {
+    const result = ConfigSchema.parse({
+      systemAvailableMinMb: 0,
+    });
 
-    const result = safeParseTicketsFile(input);
+    expect(result.systemAvailableMinMb).toBe(0);
+  });
 
-    expect(result.success).toBe(true);
-    if (result.success) {
-      expect(result.data.config.provider).toBe("claude");
-      expect(result.data.config.model).toBe("sonnet");
-      expect(result.data.tickets).toHaveLength(1);
-    }
+  it("rejects negative numbers", () => {
+    const result = ConfigSchema.safeParse({
+      systemAvailableMinMb: -512,
+    });
+
+    expect(result.success).toBe(false);
+  });
+});
+
+// =============================================================================
+// maxTotalTicketTime Config Tests
+// =============================================================================
+
+describe("maxTotalTicketTime Config", () => {
+  it("defaults to 7200000 (2 hours) when not provided", () => {
+    const result = ConfigSchema.parse({});
+
+    expect(result.maxTotalTicketTime).toBe(7200000);
+  });
+
+  it("accepts explicit duration string like '30m' and converts to ms", () => {
+    const result = ConfigSchema.parse({
+      maxTotalTicketTime: "30m",
+    });
+
+    expect(result.maxTotalTicketTime).toBe(1800000);
+  });
+
+  it("accepts numeric value as raw milliseconds", () => {
+    const result = ConfigSchema.parse({
+      maxTotalTicketTime: 60000,
+    });
+
+    expect(result.maxTotalTicketTime).toBe(60000);
+  });
+
+  it("accepts 0 to disable the wall-clock cap", () => {
+    const result = ConfigSchema.parse({
+      maxTotalTicketTime: 0,
+    });
+
+    expect(result.maxTotalTicketTime).toBe(0);
+  });
+
+  it("rejects negative numbers", () => {
+    const result = ConfigSchema.safeParse({
+      maxTotalTicketTime: -1000,
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects invalid duration strings", () => {
+    const result = ConfigSchema.safeParse({
+      maxTotalTicketTime: "invalid",
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it("is accessible via TicketsFileSchema config", () => {
+    const result = TicketsFileSchema.parse({
+      config: { maxTotalTicketTime: "1h" },
+      tickets: [{ id: "t1", title: "Test", description: "desc" }],
+    });
+
+    expect(result.config.maxTotalTicketTime).toBe(3600000);
   });
 });

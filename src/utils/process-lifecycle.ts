@@ -48,6 +48,20 @@ export function killWithTimeout(proc: ChildProcess, gracePeriodMs = 5000): Promi
   });
 }
 
+/**
+ * Kill a child process with SIGKILL immediately and resolve when it exits.
+ */
+function killImmediate(proc: ChildProcess): Promise<void> {
+  return new Promise<void>((resolve) => {
+    if (proc.exitCode !== null || proc.signalCode !== null) {
+      resolve();
+      return;
+    }
+    proc.once('exit', () => resolve());
+    sendSignal(proc, 'SIGKILL');
+  });
+}
+
 function sendSignal(proc: ChildProcess, signal: NodeJS.Signals): void {
   try {
     if (proc.pid) {
@@ -65,7 +79,9 @@ function sendSignal(proc: ChildProcess, signal: NodeJS.Signals): void {
 export interface ProcessRegistry {
   register(proc: ChildProcess, label: string): void;
   killAll(): Promise<void>;
+  killAllImmediate(): Promise<void>;
   getActiveCount(): number;
+  getActivePids(): number[];
 }
 
 function createProcessRegistry(): ProcessRegistry {
@@ -93,8 +109,22 @@ function createProcessRegistry(): ProcessRegistry {
       }
     },
 
+    async killAllImmediate(): Promise<void> {
+      const procs = [...active];
+      await Promise.all(procs.map(killImmediate));
+      for (const p of procs) {
+        active.delete(p);
+      }
+    },
+
     getActiveCount(): number {
       return active.size;
+    },
+
+    getActivePids(): number[] {
+      return [...active]
+        .filter((p) => p.pid !== undefined)
+        .map((p) => p.pid!);
     },
   };
 }

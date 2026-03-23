@@ -7,6 +7,7 @@ import { ZodError } from "zod";
 import { createOrchestrator, type Orchestrator } from "../orchestrator.js";
 import { TicketSchema, type Ticket } from "../schemas.js";
 import type { Multiplexer } from "../../messaging/multiplexer.js";
+import type { MemorySnapshot } from "../../utils/memory-monitor.js";
 
 vi.mock("../state.js", () => ({
   stateManager: {
@@ -56,6 +57,31 @@ vi.mock("../claude.js", () => ({
     resume: vi.fn().mockResolvedValue({ success: true }),
     abort: vi.fn(),
   },
+}));
+
+const mockMemoryMonitor = {
+  start: vi.fn(),
+  stop: vi.fn(),
+  isAboveWarning: vi.fn().mockReturnValue(false),
+  isAboveCeiling: vi.fn().mockReturnValue(false),
+  getLatest: vi.fn().mockReturnValue(null),
+};
+
+vi.mock("../../utils/memory-monitor.js", () => ({
+  createMemoryMonitor: vi.fn(() => mockMemoryMonitor),
+  getMemorySnapshot: vi.fn((): MemorySnapshot => ({
+    rssMb: 100,
+    heapUsedMb: 50,
+    heapTotalMb: 200,
+    externalMb: 10,
+    openFds: 20,
+    systemAvailableMb: 4000,
+    childRssMb: 0,
+    timestamp: new Date().toISOString(),
+  })),
+  tryGarbageCollect: vi.fn().mockReturnValue(false),
+  formatSnapshotMeta: vi.fn(() => ({})),
+  getDiskSnapshot: vi.fn().mockResolvedValue({ availableMb: 10000 }),
 }));
 
 vi.mock("../../utils/logger.js", () => ({
@@ -128,6 +154,8 @@ tickets: []
     multiplexer = createMockMultiplexer();
 
     vi.clearAllMocks();
+    mockMemoryMonitor.isAboveWarning.mockReturnValue(false);
+    mockMemoryMonitor.isAboveCeiling.mockReturnValue(false);
   });
 
   afterEach(async () => {
@@ -592,6 +620,212 @@ tickets:
       await expect(
         (orchestrator as unknown as { queueTicket: (t: Ticket) => Promise<void> }).queueTicket(invalidTicket)
       ).rejects.toThrow(ZodError);
+    });
+  });
+
+  describe("Memory Safety", () => {
+    it("uses dual-threshold config with memoryWarningMb and memoryCriticalMb", async () => {
+      const ticketsContent = `
+config:
+  autoApprove: true
+  memoryWarningMb: 512
+  memoryCriticalMb: 800
+tickets:
+  - id: mem-test-1
+    title: Memory Test Ticket
+    description: Tests memory monitor config
+    status: pending
+`;
+      await writeFile(ticketsFilePath, ticketsContent);
+
+      const orchestrator = createOrchestrator({
+        projectRoot: testDir,
+        ticketsFile: ticketsFilePath,
+        multiplexer,
+        dryRun: true,
+      });
+
+      await orchestrator.start();
+
+      expect(mockMemoryMonitor.start).toHaveBeenCalledWith(
+        expect.objectContaining({
+          warningMb: 512,
+          criticalMb: 800,
+        })
+      );
+
+      expect(mockMemoryMonitor.start).toHaveBeenCalledWith(
+        expect.objectContaining({
+          onWarning: expect.any(Function),
+          onCritical: expect.any(Function),
+        })
+      );
+    });
+
+    it("calls claude.abort() when critical threshold is hit", async () => {
+      const { claude: mockedClaude } = await import("../claude.js");
+
+      const ticketsContent = `
+config:
+  autoApprove: true
+  memoryWarningMb: 512
+  memoryCriticalMb: 800
+tickets:
+  - id: critical-test
+    title: Critical Threshold Test
+    description: Tests critical memory abort
+    status: pending
+`;
+      await writeFile(ticketsFilePath, ticketsContent);
+
+      const orchestrator = createOrchestrator({
+        projectRoot: testDir,
+        ticketsFile: ticketsFilePath,
+        multiplexer,
+        dryRun: true,
+      });
+
+      await orchestrator.start();
+
+      const startCall = mockMemoryMonitor.start.mock.calls[0];
+      const config = startCall[0] as { onCritical: (snapshot: MemorySnapshot) => void };
+      const fakeSnapshot: MemorySnapshot = {
+        rssMb: 900,
+        heapUsedMb: 700,
+        heapTotalMb: 1024,
+        externalMb: 10,
+        openFds: 30,
+        systemAvailableMb: 2000,
+        childRssMb: 0,
+        timestamp: new Date().toISOString(),
+      };
+
+      config.onCritical(fakeSnapshot);
+
+      expect(mockedClaude.abort).toHaveBeenCalled();
+      expect(orchestrator.isRunning()).toBe(false);
+    });
+
+    it("calls only onWarning (not abort) when warning threshold is hit", async () => {
+      const { claude: mockedClaude } = await import("../claude.js");
+      vi.mocked(mockedClaude.abort).mockClear();
+
+      const ticketsContent = `
+config:
+  autoApprove: true
+  memoryWarningMb: 512
+  memoryCriticalMb: 800
+tickets:
+  - id: warning-test
+    title: Warning Threshold Test
+    description: Tests warning does not abort
+    status: pending
+`;
+      await writeFile(ticketsFilePath, ticketsContent);
+
+      const orchestrator = createOrchestrator({
+        projectRoot: testDir,
+        ticketsFile: ticketsFilePath,
+        multiplexer,
+        dryRun: true,
+      });
+
+      await orchestrator.start();
+
+      const startCall = mockMemoryMonitor.start.mock.calls[0];
+      const config = startCall[0] as { onWarning: (snapshot: MemorySnapshot) => void };
+      const fakeSnapshot: MemorySnapshot = {
+        rssMb: 600,
+        heapUsedMb: 400,
+        heapTotalMb: 800,
+        externalMb: 10,
+        openFds: 30,
+        systemAvailableMb: 3000,
+        childRssMb: 0,
+        timestamp: new Date().toISOString(),
+      };
+
+      config.onWarning(fakeSnapshot);
+
+      expect(mockedClaude.abort).not.toHaveBeenCalled();
+    });
+
+    it("runs between-ticket cleanup after processTicket", async () => {
+      const { getMemorySnapshot, tryGarbageCollect } = await import(
+        "../../utils/memory-monitor.js"
+      );
+
+      const ticketsContent = `
+config:
+  autoApprove: true
+  sessionCleanup:
+    enabled: true
+tickets:
+  - id: cleanup-1
+    title: First Cleanup Ticket
+    description: First ticket for cleanup test
+    status: pending
+  - id: cleanup-2
+    title: Second Cleanup Ticket
+    description: Second ticket for cleanup test
+    status: pending
+`;
+      await writeFile(ticketsFilePath, ticketsContent);
+
+      const orchestrator = createOrchestrator({
+        projectRoot: testDir,
+        ticketsFile: ticketsFilePath,
+        multiplexer,
+        dryRun: true,
+      });
+
+      await orchestrator.start();
+
+      expect(getMemorySnapshot).toHaveBeenCalled();
+      expect(tryGarbageCollect).toHaveBeenCalled();
+    });
+
+    it("checks isAboveWarning before processing next ticket", async () => {
+      const ticketsContent = `
+config:
+  autoApprove: true
+  memoryWarningMb: 512
+  memoryCriticalMb: 800
+tickets:
+  - id: warn-check-1
+    title: First Warning Check Ticket
+    description: Should process
+    status: pending
+  - id: warn-check-2
+    title: Second Warning Check Ticket
+    description: Should be skipped due to warning
+    status: pending
+`;
+      await writeFile(ticketsFilePath, ticketsContent);
+
+      let callCount = 0;
+      mockMemoryMonitor.isAboveWarning.mockImplementation(() => {
+        callCount++;
+        return callCount > 1;
+      });
+
+      const orchestrator = createOrchestrator({
+        projectRoot: testDir,
+        ticketsFile: ticketsFilePath,
+        multiplexer,
+        dryRun: true,
+      });
+
+      const processedTickets: string[] = [];
+      orchestrator.on("ticket:start", (ticket) => {
+        processedTickets.push(ticket.id);
+      });
+
+      await orchestrator.start();
+
+      expect(mockMemoryMonitor.isAboveWarning).toHaveBeenCalled();
+      expect(processedTickets).toContain("warn-check-1");
+      expect(processedTickets).not.toContain("warn-check-2");
     });
   });
 

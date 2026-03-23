@@ -137,6 +137,11 @@ config:
     approval: 86400000       # 24 hours
     question: 3600000        # 1 hour
 
+  # Memory safety thresholds (MB, 0 = disabled)
+  memoryWarningMb: 768     # Pause queue before next ticket
+  memoryCriticalMb: 1024   # Abort current execution immediately
+  memoryCheckIntervalSec: 30
+
 # Global hooks (optional)
 hooks:
   beforeAll:
@@ -181,6 +186,40 @@ Each ticket supports:
 | `complete` | boolean | - | Set to `true` automatically when ticket finishes; persisted to YAML |
 
 **Status values**: `pending`, `planning`, `awaiting_approval`, `approved`, `executing`, `completed`, `failed`, `skipped`
+
+### Memory Safety
+
+Planbot monitors its own RSS memory usage to prevent OOM kills during long-running queues.
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `memoryWarningMb` | 768 | Soft ceiling — pauses queue before starting the next ticket |
+| `memoryCriticalMb` | 1024 | Hard ceiling — aborts current execution immediately via `claude.abort()` |
+| `memoryCheckIntervalSec` | 30 | Polling interval for memory checks |
+
+**How it works:**
+- Memory is checked every `memoryCheckIntervalSec` seconds, including during ticket execution
+- When RSS exceeds `memoryWarningMb`, the queue pauses after the current ticket finishes
+- When RSS exceeds `memoryCriticalMb`, the current execution is aborted immediately — this is the key protection against OOM kills
+- Child process RSS (from `/proc/{pid}/status`) is included in the total
+- Set either threshold to `0` to disable it
+
+**Recommended launch command:**
+```bash
+NODE_OPTIONS="--max-old-space-size=512 --expose-gc" planbot start
+```
+
+- `--max-old-space-size=512` caps V8 heap to 512MB
+- `--expose-gc` enables garbage collection between tickets
+
+**Optional systemd cgroup limit:**
+```ini
+# /etc/systemd/system/planbot.service.d/memory.conf
+[Service]
+MemoryMax=1G
+```
+
+> **Migration:** The deprecated `memoryCeilingMb` field maps to `memoryWarningMb` for backward compatibility.
 
 ## CLI Reference
 

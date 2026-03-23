@@ -1,6 +1,8 @@
 import { describe, it, expect } from "vitest";
 import type { Ticket } from "../../core/schemas.js";
 import { TicketSchema } from "../../core/schemas.js";
+import type { MemorySnapshot } from "../../utils/memory-monitor.js";
+import { formatMemoryInfo } from "../commands/progress-format.js";
 
 // =============================================================================
 // Test Helpers
@@ -259,4 +261,157 @@ describe("Queue Summary Display Output", () => {
   it.todo("outputs completed count including complete: true tickets (requires displayQueueSummary export)");
   it.todo("outputs failed count only when failures exist (requires displayQueueSummary export)");
   it.todo("outputs failed count when failures exist (requires displayQueueSummary export)");
+});
+
+// =============================================================================
+// Progress Line: Memory Info Formatting
+// =============================================================================
+
+function createMemorySnapshot(
+  overrides: Partial<MemorySnapshot> = {}
+): MemorySnapshot {
+  return {
+    rssMb: 93,
+    heapUsedMb: 60,
+    heapTotalMb: 80,
+    externalMb: 5,
+    openFds: 42,
+    systemAvailableMb: 10578,
+    childRssMb: 1557,
+    timestamp: "2026-03-23T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+describe("Progress Line Memory Info", () => {
+  describe("formats memory values with appropriate units", () => {
+    it("shows total memory as sum of proc and children in GB when >= 1024MB", () => {
+      const snapshot = createMemorySnapshot({
+        rssMb: 93,
+        childRssMb: 1557,
+      });
+
+      const result = formatMemoryInfo(snapshot);
+
+      expect(result).toContain("mem: 1.6GB");
+    });
+
+    it("shows proc memory in MB", () => {
+      const snapshot = createMemorySnapshot({ rssMb: 93 });
+
+      const result = formatMemoryInfo(snapshot);
+
+      expect(result).toContain("proc: 93MB");
+    });
+
+    it("shows children memory in GB when >= 1024MB", () => {
+      const snapshot = createMemorySnapshot({ childRssMb: 1557 });
+
+      const result = formatMemoryInfo(snapshot);
+
+      expect(result).toContain("children: 1.5GB");
+    });
+
+    it("shows children memory in MB when < 1024MB", () => {
+      const snapshot = createMemorySnapshot({ childRssMb: 512 });
+
+      const result = formatMemoryInfo(snapshot);
+
+      expect(result).toContain("children: 512MB");
+    });
+
+    it("shows system available memory in GB when >= 1024MB", () => {
+      const snapshot = createMemorySnapshot({ systemAvailableMb: 10578 });
+
+      const result = formatMemoryInfo(snapshot);
+
+      expect(result).toContain("sys avail: 10.3GB");
+    });
+
+    it("shows system available memory in MB when < 1024MB", () => {
+      const snapshot = createMemorySnapshot({ systemAvailableMb: 800 });
+
+      const result = formatMemoryInfo(snapshot);
+
+      expect(result).toContain("sys avail: 800MB");
+    });
+  });
+
+  describe("formats complete memory info string", () => {
+    it("includes all sections separated by pipe-delimited segments", () => {
+      const snapshot = createMemorySnapshot({
+        rssMb: 95,
+        childRssMb: 1557,
+        systemAvailableMb: 10578,
+      });
+
+      const result = formatMemoryInfo(snapshot);
+
+      expect(result).toContain("mem:");
+      expect(result).toContain("proc:");
+      expect(result).toContain("children:");
+      expect(result).toContain("sys avail:");
+    });
+
+    it("produces expected full format for typical values", () => {
+      const snapshot = createMemorySnapshot({
+        rssMb: 95,
+        childRssMb: 1557,
+        systemAvailableMb: 10578,
+      });
+
+      const result = formatMemoryInfo(snapshot);
+
+      expect(result).toBe(
+        "mem: 1.6GB (proc: 95MB + children: 1.5GB) | sys avail: 10.3GB"
+      );
+    });
+  });
+
+  describe("handles edge cases", () => {
+    it("shows total in MB when combined memory < 1024MB", () => {
+      const snapshot = createMemorySnapshot({
+        rssMb: 50,
+        childRssMb: 200,
+      });
+
+      const result = formatMemoryInfo(snapshot);
+
+      expect(result).toContain("mem: 250MB");
+    });
+
+    it("handles zero child RSS", () => {
+      const snapshot = createMemorySnapshot({
+        rssMb: 80,
+        childRssMb: 0,
+      });
+
+      const result = formatMemoryInfo(snapshot);
+
+      expect(result).toContain("proc: 80MB");
+      expect(result).toContain("children: 0MB");
+    });
+
+    it("rounds MB values to nearest integer", () => {
+      const snapshot = createMemorySnapshot({
+        rssMb: 93.7,
+        childRssMb: 0,
+      });
+
+      const result = formatMemoryInfo(snapshot);
+
+      expect(result).toContain("proc: 94MB");
+    });
+
+    it("rounds GB values to one decimal place", () => {
+      const snapshot = createMemorySnapshot({
+        rssMb: 100,
+        childRssMb: 1948,
+      });
+
+      const result = formatMemoryInfo(snapshot);
+
+      expect(result).toContain("mem: 2.0GB");
+    });
+  });
 });

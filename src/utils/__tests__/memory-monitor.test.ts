@@ -1,5 +1,81 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { getMemorySnapshot, createMemoryMonitor, getDiskSnapshot } from '../memory-monitor.js';
+import {
+  getMemorySnapshot,
+  createMemoryMonitor,
+  getDiskSnapshot,
+  getProcessTreeRss,
+  getProcessTreeBreakdown,
+  tryGarbageCollect,
+  formatSnapshotMeta,
+} from '../memory-monitor.js';
+import type { MemorySnapshot } from '../memory-monitor.js';
+
+describe('formatSnapshotMeta', () => {
+  const snapshot: MemorySnapshot = {
+    rssMb: 93.567,
+    childRssMb: 412.234,
+    heapUsedMb: 45.678,
+    heapTotalMb: 128.999,
+    externalMb: 2.345,
+    systemAvailableMb: 3500.123,
+    openFds: 42,
+    childProcesses: [
+      { pid: 100, rssMb: 300.123, command: 'node worker.js' },
+      { pid: 101, rssMb: 112.111, command: 'node helper.js' },
+    ],
+    timestamp: '2026-03-23T00:00:00.000Z',
+  };
+
+  it('returns all expected keys', () => {
+    const meta = formatSnapshotMeta(snapshot);
+
+    expect(Object.keys(meta).sort()).toEqual([
+      'childRssMb',
+      'externalMb',
+      'heapTotalMb',
+      'heapUsedMb',
+      'openFds',
+      'rssMb',
+      'systemAvailableMb',
+      'topChildProcesses',
+      'totalRssMb',
+    ]);
+  });
+
+  it('rounds numeric values to 1 decimal place', () => {
+    const meta = formatSnapshotMeta(snapshot);
+
+    expect(meta.rssMb).toBe(93.6);
+    expect(meta.childRssMb).toBe(412.2);
+    expect(meta.heapUsedMb).toBe(45.7);
+    expect(meta.heapTotalMb).toBe(129.0);
+    expect(meta.externalMb).toBe(2.3);
+    expect(meta.systemAvailableMb).toBe(3500.1);
+  });
+
+  it('computes totalRssMb as rssMb + childRssMb', () => {
+    const meta = formatSnapshotMeta(snapshot);
+
+    expect(meta.totalRssMb).toBe(+(93.567 + 412.234).toFixed(1));
+  });
+
+  it('passes openFds through as-is (integer)', () => {
+    const meta = formatSnapshotMeta(snapshot);
+
+    expect(meta.openFds).toBe(42);
+  });
+
+  it('topChildProcesses is a valid JSON string', () => {
+    const meta = formatSnapshotMeta(snapshot);
+
+    expect(typeof meta.topChildProcesses).toBe('string');
+    const parsed = JSON.parse(meta.topChildProcesses as string);
+    expect(Array.isArray(parsed)).toBe(true);
+    expect(parsed).toHaveLength(2);
+    expect(parsed[0]).toEqual({ pid: 100, rssMb: 300.1, cmd: 'node worker.js' });
+    expect(parsed[1]).toEqual({ pid: 101, rssMb: 112.1, cmd: 'node helper.js' });
+  });
+});
 
 describe('getMemorySnapshot', () => {
   it('returns valid positive MB values', () => {
@@ -119,5 +195,314 @@ describe('createMemoryMonitor', () => {
     expect(latest).not.toBeNull();
     expect(latest!.rssMb).toBeGreaterThan(0);
     expect(latest!.timestamp).toBeDefined();
+  });
+});
+
+describe('getProcessTreeRss', () => {
+  it('returns 0 for empty pid array', () => {
+    const result = getProcessTreeRss([]);
+
+    expect(result).toBe(0);
+  });
+
+  it('returns 0 for non-existent pid', () => {
+    const result = getProcessTreeRss([999999999]);
+
+    expect(result).toBe(0);
+  });
+
+  it('returns positive number for own process pid', () => {
+    const result = getProcessTreeRss([process.pid]);
+
+    expect(result).toBeGreaterThan(0);
+  });
+});
+
+
+describe('getProcessTreeBreakdown', () => {
+  it('returns empty array for empty pids', () => {
+    const result = getProcessTreeBreakdown([]);
+
+    expect(result).toEqual([]);
+  });
+
+  it('returns empty array for non-existent pid', () => {
+    const result = getProcessTreeBreakdown([999999999]);
+
+    expect(result).toEqual([]);
+  });
+
+  it('returns array with at least one entry for own process pid', () => {
+    const result = getProcessTreeBreakdown([process.pid]);
+
+    expect(result.length).toBeGreaterThanOrEqual(1);
+    for (const entry of result) {
+      expect(typeof entry.pid).toBe('number');
+      expect(typeof entry.rssMb).toBe('number');
+      expect(typeof entry.command).toBe('string');
+      expect(entry.rssMb).toBeGreaterThan(0);
+    }
+  });
+
+  it('entries are sorted descending by rssMb', () => {
+    const result = getProcessTreeBreakdown([process.pid]);
+
+    for (let i = 1; i < result.length; i++) {
+      expect(result[i - 1].rssMb).toBeGreaterThanOrEqual(result[i].rssMb);
+    }
+  });
+});
+
+describe('tryGarbageCollect', () => {
+  it('returns a boolean', () => {
+    const result = tryGarbageCollect();
+
+    expect(typeof result).toBe('boolean');
+  });
+
+  it('does not throw', () => {
+    expect(() => tryGarbageCollect()).not.toThrow();
+  });
+});
+
+describe('MemorySnapshot extended fields', () => {
+  it('returns systemAvailableMb as a non-negative number', () => {
+    const snapshot = getMemorySnapshot();
+
+    expect(typeof snapshot.systemAvailableMb).toBe('number');
+    expect(snapshot.systemAvailableMb).toBeGreaterThanOrEqual(0);
+  });
+
+  it('returns childRssMb as a number >= 0', () => {
+    const snapshot = getMemorySnapshot();
+
+    expect(typeof snapshot.childRssMb).toBe('number');
+    expect(snapshot.childRssMb).toBeGreaterThanOrEqual(0);
+  });
+
+  it('returns childProcesses as an array', () => {
+    const snapshot = getMemorySnapshot();
+
+    expect(Array.isArray(snapshot.childProcesses)).toBe(true);
+  });
+});
+
+describe('createMemoryMonitor dual-threshold', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('fires onWarning when RSS exceeds warning threshold', () => {
+    const onWarning = vi.fn();
+    const onCritical = vi.fn();
+    const monitor = createMemoryMonitor();
+
+    monitor.start({
+      intervalSec: 1,
+      warningMb: 1,
+      criticalMb: 999999,
+      onWarning,
+      onCritical,
+    });
+    vi.advanceTimersByTime(2_000);
+    monitor.stop();
+
+    expect(onWarning).toHaveBeenCalled();
+    const snapshot = onWarning.mock.calls[0][0];
+    expect(snapshot.rssMb).toBeGreaterThan(0);
+  });
+
+  it('fires onCritical when RSS exceeds critical threshold', () => {
+    const onWarning = vi.fn();
+    const onCritical = vi.fn();
+    const monitor = createMemoryMonitor();
+
+    monitor.start({
+      intervalSec: 1,
+      warningMb: 1,
+      criticalMb: 1,
+      onWarning,
+      onCritical,
+    });
+    vi.advanceTimersByTime(2_000);
+    monitor.stop();
+
+    expect(onCritical).toHaveBeenCalled();
+    const snapshot = onCritical.mock.calls[0][0];
+    expect(snapshot.rssMb).toBeGreaterThan(0);
+  });
+
+  it('does not fire onCritical when RSS below critical but above warning', () => {
+    const onWarning = vi.fn();
+    const onCritical = vi.fn();
+    const monitor = createMemoryMonitor();
+
+    monitor.start({
+      intervalSec: 1,
+      warningMb: 1,
+      criticalMb: 999999,
+      onWarning,
+      onCritical,
+    });
+    vi.advanceTimersByTime(2_000);
+    monitor.stop();
+
+    expect(onWarning).toHaveBeenCalled();
+    expect(onCritical).not.toHaveBeenCalled();
+  });
+
+  it('isAboveWarning returns same result as deprecated isAboveCeiling', () => {
+    const monitor = createMemoryMonitor();
+
+    monitor.start({
+      intervalSec: 60,
+      warningMb: 1,
+      criticalMb: 999999,
+      onWarning: vi.fn(),
+      onCritical: vi.fn(),
+    });
+
+    const warningResult = monitor.isAboveWarning();
+    const ceilingResult = monitor.isAboveCeiling();
+    monitor.stop();
+
+    expect(warningResult).toBe(ceilingResult);
+  });
+
+  it('invokes getChildPids callback on each check cycle', () => {
+    const getChildPids = vi.fn().mockReturnValue([]);
+    const monitor = createMemoryMonitor();
+
+    monitor.start({
+      intervalSec: 1,
+      warningMb: 999999,
+      criticalMb: 999999,
+      onWarning: vi.fn(),
+      onCritical: vi.fn(),
+      getChildPids,
+    });
+    vi.advanceTimersByTime(3_000);
+    monitor.stop();
+
+    expect(getChildPids.mock.calls.length).toBeGreaterThanOrEqual(3);
+  });
+});
+
+describe('createMemoryMonitor system-available-memory threshold', () => {
+  const realFreemem = vi.hoisted(() => {
+    return { value: 0 };
+  });
+
+  vi.mock('node:os', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('node:os')>();
+    return {
+      ...actual,
+      default: {
+        ...actual,
+        freemem: () => realFreemem.value,
+      },
+    };
+  });
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('fires onCritical when system available memory drops below systemAvailableMinMb', async () => {
+    realFreemem.value = 1500 * 1024 * 1024;
+
+    const { createMemoryMonitor: createMon } = await import('../memory-monitor.js');
+    const onWarning = vi.fn();
+    const onCritical = vi.fn();
+    const monitor = createMon();
+
+    monitor.start({
+      intervalSec: 1,
+      warningMb: 999999,
+      criticalMb: 999999,
+      onWarning,
+      onCritical,
+      systemAvailableMinMb: 2048,
+    });
+    vi.advanceTimersByTime(1_000);
+    monitor.stop();
+
+    expect(onCritical).toHaveBeenCalled();
+  });
+
+  it('does not fire onCritical when system available memory is above systemAvailableMinMb', async () => {
+    realFreemem.value = 3000 * 1024 * 1024;
+
+    const { createMemoryMonitor: createMon } = await import('../memory-monitor.js');
+    const onWarning = vi.fn();
+    const onCritical = vi.fn();
+    const monitor = createMon();
+
+    monitor.start({
+      intervalSec: 1,
+      warningMb: 999999,
+      criticalMb: 999999,
+      onWarning,
+      onCritical,
+      systemAvailableMinMb: 2048,
+    });
+    vi.advanceTimersByTime(1_000);
+    monitor.stop();
+
+    expect(onCritical).not.toHaveBeenCalled();
+  });
+
+  it('does not fire onCritical for system memory when systemAvailableMinMb is 0 (disabled)', async () => {
+    realFreemem.value = 500 * 1024 * 1024;
+
+    const { createMemoryMonitor: createMon } = await import('../memory-monitor.js');
+    const onWarning = vi.fn();
+    const onCritical = vi.fn();
+    const monitor = createMon();
+
+    monitor.start({
+      intervalSec: 1,
+      warningMb: 999999,
+      criticalMb: 999999,
+      onWarning,
+      onCritical,
+      systemAvailableMinMb: 0,
+    });
+    vi.advanceTimersByTime(1_000);
+    monitor.stop();
+
+    expect(onCritical).not.toHaveBeenCalled();
+  });
+
+  it('triggers onCritical for low system memory even when RSS is below thresholds', async () => {
+    realFreemem.value = 1000 * 1024 * 1024;
+
+    const { createMemoryMonitor: createMon } = await import('../memory-monitor.js');
+    const onWarning = vi.fn();
+    const onCritical = vi.fn();
+    const monitor = createMon();
+
+    monitor.start({
+      intervalSec: 1,
+      warningMb: 999999,
+      criticalMb: 999999,
+      onWarning,
+      onCritical,
+      systemAvailableMinMb: 2048,
+    });
+    vi.advanceTimersByTime(1_000);
+    monitor.stop();
+
+    expect(onCritical).toHaveBeenCalled();
+    const snapshot = onCritical.mock.calls[0][0];
+    expect(snapshot.systemAvailableMb).toBeLessThan(2048);
   });
 });

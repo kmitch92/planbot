@@ -144,24 +144,45 @@ function createMockMultiplexer(): Multiplexer {
   } as unknown as Multiplexer;
 }
 
-function createRateLimitError(message = "You have hit your limit") {
-  return {
-    success: false,
-    error: message,
-    costUsd: 0.001,
-  };
-}
-
 // =============================================================================
 // YAML Fixtures
 // =============================================================================
 
-const ticketsYamlEnabled = `
+const ticketsYamlWithShortTimeout = `
+config:
+  autoApprove: true
+  model: "opus"
+  fallbackModel: "sonnet"
+  maxRetries: 2
+  maxTotalTicketTime: 1000
+tickets:
+  - id: test-001
+    title: Test Ticket
+    description: Test description
+    planMode: false
+`;
+
+const ticketsYamlWithDisabledTimeout = `
+config:
+  autoApprove: true
+  model: "opus"
+  fallbackModel: "sonnet"
+  maxRetries: 2
+  maxTotalTicketTime: 0
+tickets:
+  - id: test-001
+    title: Test Ticket
+    description: Test description
+    planMode: false
+`;
+
+const ticketsYamlWithShortTimeoutAndRateLimit = `
 config:
   autoApprove: true
   model: "opus"
   fallbackModel: "sonnet"
   maxRetries: 0
+  maxTotalTicketTime: 2000
   rateLimitRetry:
     enabled: true
     maxWaitTime: "6h"
@@ -175,49 +196,17 @@ tickets:
     planMode: false
 `;
 
-const ticketsYamlDisabled = `
-config:
-  autoApprove: true
-  model: "opus"
-  fallbackModel: "sonnet"
-  maxRetries: 0
-tickets:
-  - id: test-001
-    title: Test Ticket
-    description: Test description
-    planMode: false
-`;
-
-const ticketsYamlNotifyFalse = `
-config:
-  autoApprove: true
-  model: "opus"
-  fallbackModel: "sonnet"
-  maxRetries: 0
-  rateLimitRetry:
-    enabled: true
-    maxWaitTime: "6h"
-    retryBuffer: "30s"
-    fallbackDelay: "5m"
-    notifyOnWait: false
-tickets:
-  - id: test-001
-    title: Test Ticket
-    description: Test description
-    planMode: false
-`;
-
 // =============================================================================
-// Test Suite
+// Test Suite: Per-Ticket Wall-Clock Cap
 // =============================================================================
 
-describe("Orchestrator Rate Limit Retry", () => {
+describe("Orchestrator Per-Ticket Wall-Clock Cap", () => {
   let testDir: string;
   let ticketsFilePath: string;
   let multiplexer: Multiplexer;
 
   beforeEach(async () => {
-    testDir = await mkdtemp(join(tmpdir(), "planbot-rate-limit-retry-"));
+    testDir = await mkdtemp(join(tmpdir(), "planbot-ticket-timeout-"));
     ticketsFilePath = join(testDir, "tickets.yaml");
     multiplexer = createMockMultiplexer();
     vi.clearAllMocks();
@@ -229,18 +218,51 @@ describe("Orchestrator Rate Limit Retry", () => {
   });
 
   // ===========================================================================
-  // 1. rateLimitRetry disabled (default)
+  // Test A: Ticket aborted when wall-clock exceeds maxTotalTicketTime
   // ===========================================================================
 
-  it("fails after fallback without waiting when rateLimitRetry is disabled", async () => {
-    await writeFile(ticketsFilePath, ticketsYamlDisabled);
+  it("aborts ticket with timeout error when wall-clock exceeds maxTotalTicketTime", async () => {
+    await writeFile(ticketsFilePath, ticketsYamlWithShortTimeout);
 
     const { claude } = await import("../claude.js");
     const mockClaude = vi.mocked(claude);
 
-    mockClaude.execute
-      .mockResolvedValueOnce(createRateLimitError())
-      .mockResolvedValueOnce(createRateLimitError("Fallback also rate limited"));
+    mockClaude.execute.mockImplementation(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      return { success: true, sessionId: "mock-session" };
+    });
+
+    const orchestrator = createOrchestrator({
+      projectRoot: testDir,
+      ticketsFile: ticketsFilePath,
+      multiplexer,
+    });
+
+    const failedTickets: Array<{ id: string; error: string }> = [];
+    orchestrator.on("ticket:failed", (ticket, error) => {
+      failedTickets.push({ id: ticket.id, error });
+    });
+    orchestrator.on("error", () => {});
+
+    await orchestrator.start();
+
+    expect(failedTickets).toHaveLength(1);
+    expect(failedTickets[0]?.error).toMatch(/timeout|wall.clock|exceeded|time.limit/i);
+    expect(mockClaude.execute).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not retry after wall-clock timeout is reached", async () => {
+    await writeFile(ticketsFilePath, ticketsYamlWithShortTimeout);
+
+    const { claude } = await import("../claude.js");
+    const mockClaude = vi.mocked(claude);
+
+    let callCount = 0;
+    mockClaude.execute.mockImplementation(async () => {
+      callCount++;
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      return { success: false, error: "Some error" };
+    });
 
     const orchestrator = createOrchestrator({
       projectRoot: testDir,
@@ -251,23 +273,15 @@ describe("Orchestrator Rate Limit Retry", () => {
     orchestrator.on("error", () => {});
     await orchestrator.start();
 
-    expect(mockClaude.execute).toHaveBeenCalledTimes(2);
-
-    const rateLimitRetryCalls = mockInterruptibleDelay.mock.calls.filter(
-      (call: unknown[]) => {
-        const opts = call[0] as { durationMs: number };
-        return opts.durationMs > 60000;
-      }
-    );
-    expect(rateLimitRetryCalls).toHaveLength(0);
-  });
+    expect(callCount).toBeLessThanOrEqual(1);
+  }, 15000);
 
   // ===========================================================================
-  // 2. Waits and retries successfully after rate limit
+  // Test B: Rate-limit wait respects remaining ticket time
   // ===========================================================================
 
-  it("waits and retries successfully after both primary and fallback hit rate limit", async () => {
-    await writeFile(ticketsFilePath, ticketsYamlEnabled);
+  it("aborts rather than waiting for rate-limit reset when remaining ticket time is insufficient", async () => {
+    await writeFile(ticketsFilePath, ticketsYamlWithShortTimeoutAndRateLimit);
 
     const { claude, getLastRateLimitResetsAt } = await import("../claude.js");
     const mockClaude = vi.mocked(claude);
@@ -276,49 +290,16 @@ describe("Orchestrator Rate Limit Retry", () => {
     mockGetResetsAt.mockReturnValue(Math.floor(Date.now() / 1000) + 300);
 
     mockClaude.execute
-      .mockResolvedValueOnce(createRateLimitError())
-      .mockResolvedValueOnce(createRateLimitError("Fallback rate limited"))
       .mockResolvedValueOnce({
-        success: true,
-        sessionId: "retry-session",
+        success: false,
+        error: "You have hit your limit",
+        costUsd: 0.001,
+      })
+      .mockResolvedValueOnce({
+        success: false,
+        error: "You have hit your limit",
+        costUsd: 0.001,
       });
-
-    const orchestrator = createOrchestrator({
-      projectRoot: testDir,
-      ticketsFile: ticketsFilePath,
-      multiplexer,
-    });
-
-    orchestrator.on("error", () => {});
-    await orchestrator.start();
-
-    expect(mockClaude.execute).toHaveBeenCalledTimes(3);
-
-    const longDelayCalls = mockInterruptibleDelay.mock.calls.filter(
-      (call: unknown[]) => {
-        const opts = call[0] as { durationMs: number };
-        return opts.durationMs > 60000;
-      }
-    );
-    expect(longDelayCalls.length).toBeGreaterThanOrEqual(1);
-  });
-
-  // ===========================================================================
-  // 3. Does NOT wait when wait exceeds maxWaitTime
-  // ===========================================================================
-
-  it("does not wait when rate limit reset time exceeds maxWaitTime", async () => {
-    await writeFile(ticketsFilePath, ticketsYamlEnabled);
-
-    const { claude, getLastRateLimitResetsAt } = await import("../claude.js");
-    const mockClaude = vi.mocked(claude);
-    const mockGetResetsAt = vi.mocked(getLastRateLimitResetsAt);
-
-    mockGetResetsAt.mockReturnValue(Math.floor(Date.now() / 1000) + 25200);
-
-    mockClaude.execute
-      .mockResolvedValueOnce(createRateLimitError())
-      .mockResolvedValueOnce(createRateLimitError("Fallback rate limited"));
 
     const orchestrator = createOrchestrator({
       projectRoot: testDir,
@@ -336,32 +317,22 @@ describe("Orchestrator Rate Limit Retry", () => {
       }
     );
     expect(longDelayCalls).toHaveLength(0);
-
-    expect(mockClaude.execute).toHaveBeenCalledTimes(2);
   });
 
   // ===========================================================================
-  // 4. Wait is interruptible by pause/stop
+  // Timeout disabled (0) allows unlimited execution
   // ===========================================================================
 
-  it("fails without retrying when rate limit wait is interrupted", async () => {
-    await writeFile(ticketsFilePath, ticketsYamlEnabled);
+  it("does not enforce timeout when maxTotalTicketTime is 0 (disabled)", async () => {
+    await writeFile(ticketsFilePath, ticketsYamlWithDisabledTimeout);
 
-    const { claude, getLastRateLimitResetsAt } = await import("../claude.js");
+    const { claude } = await import("../claude.js");
     const mockClaude = vi.mocked(claude);
-    const mockGetResetsAt = vi.mocked(getLastRateLimitResetsAt);
 
-    mockGetResetsAt.mockReturnValue(Math.floor(Date.now() / 1000) + 300);
-
-    mockInterruptibleDelay.mockResolvedValueOnce({
-      completed: false,
-      interrupted: true,
-      elapsedMs: 5000,
+    mockClaude.execute.mockResolvedValueOnce({
+      success: true,
+      sessionId: "mock-session",
     });
-
-    mockClaude.execute
-      .mockResolvedValueOnce(createRateLimitError())
-      .mockResolvedValueOnce(createRateLimitError("Fallback rate limited"));
 
     const orchestrator = createOrchestrator({
       projectRoot: testDir,
@@ -369,122 +340,14 @@ describe("Orchestrator Rate Limit Retry", () => {
       multiplexer,
     });
 
-    orchestrator.on("error", () => {});
-    await orchestrator.start();
-
-    expect(mockClaude.execute).toHaveBeenCalledTimes(2);
-  });
-
-  // ===========================================================================
-  // 5. Sends notification when notifyOnWait is true
-  // ===========================================================================
-
-  it("broadcasts status notification when waiting for rate limit reset with notifyOnWait enabled", async () => {
-    await writeFile(ticketsFilePath, ticketsYamlEnabled);
-
-    const { claude, getLastRateLimitResetsAt } = await import("../claude.js");
-    const mockClaude = vi.mocked(claude);
-    const mockGetResetsAt = vi.mocked(getLastRateLimitResetsAt);
-    const mockBroadcastStatus = vi.mocked(multiplexer.broadcastStatus);
-
-    mockGetResetsAt.mockReturnValue(Math.floor(Date.now() / 1000) + 300);
-
-    mockClaude.execute
-      .mockResolvedValueOnce(createRateLimitError())
-      .mockResolvedValueOnce(createRateLimitError("Fallback rate limited"))
-      .mockResolvedValueOnce({ success: true });
-
-    const orchestrator = createOrchestrator({
-      projectRoot: testDir,
-      ticketsFile: ticketsFilePath,
-      multiplexer,
+    const completedTickets: string[] = [];
+    orchestrator.on("ticket:completed", (ticket) => {
+      completedTickets.push(ticket.id);
     });
-
     orchestrator.on("error", () => {});
+
     await orchestrator.start();
 
-    const rateLimitStatusCalls = mockBroadcastStatus.mock.calls.filter(
-      (call) => {
-        const status = call[0] as { message?: string; status?: string };
-        return (
-          (status.message && /rate.limit|wait/i.test(status.message)) ||
-          (status.status && /wait/i.test(status.status))
-        );
-      }
-    );
-    expect(rateLimitStatusCalls.length).toBeGreaterThanOrEqual(1);
-  });
-
-  // ===========================================================================
-  // 6. No notification when notifyOnWait is false
-  // ===========================================================================
-
-  it("does not broadcast rate limit wait notification when notifyOnWait is false", async () => {
-    await writeFile(ticketsFilePath, ticketsYamlNotifyFalse);
-
-    const { claude, getLastRateLimitResetsAt } = await import("../claude.js");
-    const mockClaude = vi.mocked(claude);
-    const mockGetResetsAt = vi.mocked(getLastRateLimitResetsAt);
-    const mockBroadcastStatus = vi.mocked(multiplexer.broadcastStatus);
-
-    mockGetResetsAt.mockReturnValue(Math.floor(Date.now() / 1000) + 300);
-
-    mockClaude.execute
-      .mockResolvedValueOnce(createRateLimitError())
-      .mockResolvedValueOnce(createRateLimitError("Fallback rate limited"))
-      .mockResolvedValueOnce({ success: true });
-
-    const orchestrator = createOrchestrator({
-      projectRoot: testDir,
-      ticketsFile: ticketsFilePath,
-      multiplexer,
-    });
-
-    orchestrator.on("error", () => {});
-    await orchestrator.start();
-
-    const rateLimitWaitCalls = mockBroadcastStatus.mock.calls.filter(
-      (call) => {
-        const status = call[0] as { message?: string };
-        return status.message && /rate.limit.*wait|waiting.*rate/i.test(status.message);
-      }
-    );
-    expect(rateLimitWaitCalls).toHaveLength(0);
-  });
-
-  // ===========================================================================
-  // 7. Uses fallbackDelay when resetsAt is null
-  // ===========================================================================
-
-  it("uses fallbackDelay duration when getLastRateLimitResetsAt returns null", async () => {
-    await writeFile(ticketsFilePath, ticketsYamlEnabled);
-
-    const { claude, getLastRateLimitResetsAt } = await import("../claude.js");
-    const mockClaude = vi.mocked(claude);
-    const mockGetResetsAt = vi.mocked(getLastRateLimitResetsAt);
-
-    mockGetResetsAt.mockReturnValue(null);
-
-    mockClaude.execute
-      .mockResolvedValueOnce(createRateLimitError())
-      .mockResolvedValueOnce(createRateLimitError("Fallback rate limited"))
-      .mockResolvedValueOnce({ success: true });
-
-    const orchestrator = createOrchestrator({
-      projectRoot: testDir,
-      ticketsFile: ticketsFilePath,
-      multiplexer,
-    });
-
-    orchestrator.on("error", () => {});
-    await orchestrator.start();
-
-    const fallbackDelayCalls = mockInterruptibleDelay.mock.calls.filter(
-      (call: unknown[]) => {
-        const opts = call[0] as { durationMs: number };
-        return opts.durationMs === 300000;
-      }
-    );
-    expect(fallbackDelayCalls).toHaveLength(1);
+    expect(completedTickets).toContain("test-001");
   });
 });
