@@ -306,6 +306,8 @@ export const ConfigSchema = z.object({
   diskFloorMb: z.number().int().nonnegative().default(500),
   /** Max V8 heap size in MB for spawned Claude processes (default: 4096). Passed via NODE_OPTIONS --max-old-space-size. */
   maxClaudeHeapMb: z.number().int().positive().default(4096),
+  /** Minimum system available memory in MB. When free memory drops below this, triggers critical. 0 = disabled (default: 2048). */
+  systemAvailableMinMb: z.number().int().nonnegative().default(2048),
 }).transform((val) => {
   // Map deprecated memoryCeilingMb to memoryWarningMb if warning was not explicitly provided
   if (val.memoryCeilingMb !== undefined && val.memoryWarningMb === 768) {

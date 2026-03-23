@@ -871,3 +871,39 @@ describe("maxClaudeHeapMb Config", () => {
     expect(result.success).toBe(false);
   });
 });
+
+// =============================================================================
+// systemAvailableMinMb Config Tests
+// =============================================================================
+
+describe("systemAvailableMinMb Config", () => {
+  it("defaults to 2048 when not provided", () => {
+    const result = ConfigSchema.parse({});
+
+    expect(result.systemAvailableMinMb).toBe(2048);
+  });
+
+  it("accepts explicit value", () => {
+    const result = ConfigSchema.parse({
+      systemAvailableMinMb: 4096,
+    });
+
+    expect(result.systemAvailableMinMb).toBe(4096);
+  });
+
+  it("accepts 0 to disable the check", () => {
+    const result = ConfigSchema.parse({
+      systemAvailableMinMb: 0,
+    });
+
+    expect(result.systemAvailableMinMb).toBe(0);
+  });
+
+  it("rejects negative numbers", () => {
+    const result = ConfigSchema.safeParse({
+      systemAvailableMinMb: -512,
+    });
+
+    expect(result.success).toBe(false);
+  });
+});
