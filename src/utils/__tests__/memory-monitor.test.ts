@@ -148,6 +148,7 @@ describe('getProcessTreeRss', () => {
   });
 });
 
+
 describe('tryGarbageCollect', () => {
   it('returns a boolean', () => {
     const result = tryGarbageCollect();
