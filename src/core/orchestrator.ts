@@ -208,6 +208,7 @@ class OrchestratorImpl
           intervalSec: config.memoryCheckIntervalSec,
           warningMb: config.memoryWarningMb,
           criticalMb: config.memoryCriticalMb,
+          systemAvailableMinMb: config.systemAvailableMinMb,
           onWarning: (snapshot) => {
             logger.warn("Memory warning threshold hit", {
               rssMb: snapshot.rssMb.toFixed(1),
@@ -1154,6 +1155,7 @@ class OrchestratorImpl
         timeout: config.timeouts.planGeneration,
         cwd: ticketCwd,
         verbose: this.verbose,
+        maxHeapMb: config.maxClaudeHeapMb,
       },
       (text) => this.handleOutput(ticket, text),
     );
@@ -1182,6 +1184,7 @@ class OrchestratorImpl
           timeout: config.timeouts.planGeneration,
           cwd: ticketCwd,
           verbose: this.verbose,
+          maxHeapMb: config.maxClaudeHeapMb,
         },
         (text) => this.handleOutput(ticket, text),
       );
@@ -1243,6 +1246,7 @@ class OrchestratorImpl
               timeout: config.timeouts.planGeneration,
               cwd: ticketCwd,
               verbose: this.verbose,
+              maxHeapMb: config.maxClaudeHeapMb,
             },
             (text) => this.handleOutput(ticket, text),
           );
@@ -1380,6 +1384,7 @@ class OrchestratorImpl
             timeout: config.timeouts.execution,
             cwd: effectiveCwd,
             verbose: this.verbose,
+            maxHeapMb: config.maxClaudeHeapMb,
           },
           {
             onEvent: (event) => this.handleClaudeEvent(ticket, event),
@@ -1456,6 +1461,7 @@ class OrchestratorImpl
               timeout: config.timeouts.execution,
               cwd: effectiveCwd,
               verbose: this.verbose,
+              maxHeapMb: config.maxClaudeHeapMb,
             },
             {
               onEvent: (event) => this.handleClaudeEvent(ticket, event),
@@ -1520,6 +1526,7 @@ class OrchestratorImpl
                     timeout: config.timeouts.execution,
                     cwd: effectiveCwd,
                     verbose: this.verbose,
+                    maxHeapMb: config.maxClaudeHeapMb,
                   },
                   {
                     onEvent: (event) => this.handleClaudeEvent(ticket, event),
@@ -1964,6 +1971,7 @@ class OrchestratorImpl
               cwd: effectiveCwd,
               timeout: 300000,
               verbose: this.verbose,
+              maxHeapMb: config.maxClaudeHeapMb,
             });
             return {
               success: result.success,
@@ -2293,6 +2301,7 @@ class OrchestratorImpl
             timeout: 300000,
             skipPermissions: config?.skipPermissions,
             verbose: this.verbose,
+            maxHeapMb: config?.maxClaudeHeapMb,
           });
 
           // Check for rate limit and attempt fallback if applicable
@@ -2317,6 +2326,7 @@ class OrchestratorImpl
               timeout: 300000,
               skipPermissions: config?.skipPermissions,
               verbose: this.verbose,
+              maxHeapMb: config?.maxClaudeHeapMb,
             });
           }
 
@@ -2375,6 +2385,7 @@ class OrchestratorImpl
                   timeout: 300000,
                   skipPermissions: config?.skipPermissions,
                   verbose: this.verbose,
+                  maxHeapMb: config?.maxClaudeHeapMb,
                 });
               }
             }
