@@ -21,6 +21,21 @@ function getOpenFdCount(): number {
   }
 }
 
+const round = (n: number): number => +n.toFixed(1);
+
+export function formatSnapshotMeta(snapshot: MemorySnapshot): Record<string, string | number> {
+  return {
+    rssMb: round(snapshot.rssMb),
+    childRssMb: round(snapshot.childRssMb),
+    totalRssMb: round(snapshot.rssMb + snapshot.childRssMb),
+    heapUsedMb: round(snapshot.heapUsedMb),
+    heapTotalMb: round(snapshot.heapTotalMb),
+    externalMb: round(snapshot.externalMb),
+    systemAvailableMb: round(snapshot.systemAvailableMb),
+    openFds: snapshot.openFds,
+  };
+}
+
 export function getMemorySnapshot(): MemorySnapshot {
   const mem = process.memoryUsage();
   return {

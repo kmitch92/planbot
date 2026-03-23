@@ -5,7 +5,60 @@ import {
   getDiskSnapshot,
   getProcessTreeRss,
   tryGarbageCollect,
+  formatSnapshotMeta,
 } from '../memory-monitor.js';
+import type { MemorySnapshot } from '../memory-monitor.js';
+
+describe('formatSnapshotMeta', () => {
+  const snapshot: MemorySnapshot = {
+    rssMb: 93.567,
+    childRssMb: 412.234,
+    heapUsedMb: 45.678,
+    heapTotalMb: 128.999,
+    externalMb: 2.345,
+    systemAvailableMb: 3500.123,
+    openFds: 42,
+    timestamp: '2026-03-23T00:00:00.000Z',
+  };
+
+  it('returns all expected keys', () => {
+    const meta = formatSnapshotMeta(snapshot);
+
+    expect(Object.keys(meta).sort()).toEqual([
+      'childRssMb',
+      'externalMb',
+      'heapTotalMb',
+      'heapUsedMb',
+      'openFds',
+      'rssMb',
+      'systemAvailableMb',
+      'totalRssMb',
+    ]);
+  });
+
+  it('rounds numeric values to 1 decimal place', () => {
+    const meta = formatSnapshotMeta(snapshot);
+
+    expect(meta.rssMb).toBe(93.6);
+    expect(meta.childRssMb).toBe(412.2);
+    expect(meta.heapUsedMb).toBe(45.7);
+    expect(meta.heapTotalMb).toBe(129.0);
+    expect(meta.externalMb).toBe(2.3);
+    expect(meta.systemAvailableMb).toBe(3500.1);
+  });
+
+  it('computes totalRssMb as rssMb + childRssMb', () => {
+    const meta = formatSnapshotMeta(snapshot);
+
+    expect(meta.totalRssMb).toBe(+(93.567 + 412.234).toFixed(1));
+  });
+
+  it('passes openFds through as-is (integer)', () => {
+    const meta = formatSnapshotMeta(snapshot);
+
+    expect(meta.openFds).toBe(42);
+  });
+});
 
 describe('getMemorySnapshot', () => {
   it('returns valid positive MB values', () => {
