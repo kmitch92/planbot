@@ -304,6 +304,8 @@ export const ConfigSchema = z.object({
   memoryCheckIntervalSec: z.number().int().positive().default(30),
   /** Minimum free disk space in MB. When available space drops below this, queue pauses. 0 = disabled (default: 500). */
   diskFloorMb: z.number().int().nonnegative().default(500),
+  /** Max V8 heap size in MB for spawned Claude processes (default: 4096). Passed via NODE_OPTIONS --max-old-space-size. */
+  maxClaudeHeapMb: z.number().int().positive().default(4096),
 }).transform((val) => {
   // Map deprecated memoryCeilingMb to memoryWarningMb if warning was not explicitly provided
   if (val.memoryCeilingMb !== undefined && val.memoryWarningMb === 768) {

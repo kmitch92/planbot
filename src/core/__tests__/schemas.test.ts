@@ -835,3 +835,39 @@ describe("Memory Threshold Config", () => {
     }
   });
 });
+
+// =============================================================================
+// maxClaudeHeapMb Config Tests
+// =============================================================================
+
+describe("maxClaudeHeapMb Config", () => {
+  it("defaults to 4096 when not provided", () => {
+    const result = ConfigSchema.parse({});
+
+    expect(result.maxClaudeHeapMb).toBe(4096);
+  });
+
+  it("accepts explicit value", () => {
+    const result = ConfigSchema.parse({
+      maxClaudeHeapMb: 8192,
+    });
+
+    expect(result.maxClaudeHeapMb).toBe(8192);
+  });
+
+  it("rejects zero", () => {
+    const result = ConfigSchema.safeParse({
+      maxClaudeHeapMb: 0,
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects negative numbers", () => {
+    const result = ConfigSchema.safeParse({
+      maxClaudeHeapMb: -1024,
+    });
+
+    expect(result.success).toBe(false);
+  });
+});

@@ -23,6 +23,8 @@ export interface AgentOptions {
   cwd?: string;
   /** Enable verbose output */
   verbose?: boolean;
+  /** Max V8 heap size in MB for spawned process (passed via NODE_OPTIONS --max-old-space-size) */
+  maxHeapMb?: number;
 }
 
 export interface PlanResult {
@@ -144,6 +146,7 @@ export interface AgentProvider {
       timeout?: number;
       skipPermissions?: boolean;
       verbose?: boolean;
+      maxHeapMb?: number;
     },
   ): Promise<{
     success: boolean;
