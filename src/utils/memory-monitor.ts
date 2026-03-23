@@ -2,6 +2,12 @@ import { readdirSync, readFileSync } from 'node:fs';
 import os from 'node:os';
 import { logger } from './logger.js';
 
+export interface ProcessMemoryInfo {
+  pid: number;
+  rssMb: number;
+  command: string;
+}
+
 export interface MemorySnapshot {
   rssMb: number;
   heapUsedMb: number;
@@ -10,6 +16,7 @@ export interface MemorySnapshot {
   openFds: number;
   systemAvailableMb: number;
   childRssMb: number;
+  childProcesses: ProcessMemoryInfo[];
   timestamp: string;
 }
 
@@ -33,6 +40,13 @@ export function formatSnapshotMeta(snapshot: MemorySnapshot): Record<string, str
     externalMb: round(snapshot.externalMb),
     systemAvailableMb: round(snapshot.systemAvailableMb),
     openFds: snapshot.openFds,
+    topChildProcesses: JSON.stringify(
+      snapshot.childProcesses.slice(0, 5).map(p => ({
+        pid: p.pid,
+        rssMb: round(p.rssMb),
+        cmd: p.command,
+      }))
+    ),
   };
 }
 
@@ -46,6 +60,7 @@ export function getMemorySnapshot(): MemorySnapshot {
     openFds: getOpenFdCount(),
     systemAvailableMb: os.freemem() / (1024 * 1024),
     childRssMb: 0,
+    childProcesses: [],
     timestamp: new Date().toISOString(),
   };
 }
@@ -83,6 +98,56 @@ export function getProcessTreeRss(pids: number[]): number {
   }
 
   return totalKb / 1024;
+}
+
+/**
+ * Walk the process tree for the given root PIDs and return per-process RSS breakdown.
+ * Returns array sorted by rssMb descending (biggest consumers first).
+ */
+export function getProcessTreeBreakdown(pids: number[]): ProcessMemoryInfo[] {
+  const visited = new Set<number>();
+  const queue: number[] = [...pids];
+  const result: ProcessMemoryInfo[] = [];
+
+  while (queue.length > 0) {
+    const pid = queue.pop()!;
+    if (visited.has(pid)) continue;
+    visited.add(pid);
+
+    let rssMb = 0;
+    try {
+      const status = readFileSync(`/proc/${pid}/status`, 'utf-8');
+      const match = status.match(/^VmRSS:\s+(\d+)\s+kB$/m);
+      if (match) {
+        rssMb = Number(match[1]) / 1024;
+      }
+    } catch {
+      continue;
+    }
+
+    let command = '<unknown>';
+    try {
+      const raw = readFileSync(`/proc/${pid}/cmdline`, 'utf-8');
+      command = raw.replace(/\0/g, ' ').trim().slice(0, 80) || '<unknown>';
+    } catch {
+      // unreadable cmdline
+    }
+
+    result.push({ pid, rssMb, command });
+
+    try {
+      const children = readFileSync(`/proc/${pid}/task/${pid}/children`, 'utf-8');
+      const childPids = children.trim().split(/\s+/).filter(Boolean).map(Number);
+      for (const child of childPids) {
+        queue.push(child);
+      }
+    } catch {
+      // No children file
+    }
+  }
+
+  result.sort((a, b) => b.rssMb - a.rssMb);
+  return result;
 }
 
 export function tryGarbageCollect(): boolean {
@@ -170,11 +235,12 @@ export function createMemoryMonitor(): MemoryMonitor {
 
         const check = () => {
           latest = getMemorySnapshot();
-          const childRss = config.getChildPids
-            ? getProcessTreeRss(config.getChildPids())
-            : 0;
-          latest.childRssMb = childRss;
-          const totalRss = latest.rssMb + childRss;
+          const breakdown = config.getChildPids
+            ? getProcessTreeBreakdown(config.getChildPids())
+            : [];
+          latest.childRssMb = breakdown.reduce((sum, p) => sum + p.rssMb, 0);
+          latest.childProcesses = breakdown;
+          const totalRss = latest.rssMb + latest.childRssMb;
 
           const rssCritical = config.criticalMb > 0 && totalRss >= config.criticalMb;
           const systemCritical =

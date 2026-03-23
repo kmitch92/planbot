@@ -4,6 +4,7 @@ import {
   createMemoryMonitor,
   getDiskSnapshot,
   getProcessTreeRss,
+  getProcessTreeBreakdown,
   tryGarbageCollect,
   formatSnapshotMeta,
 } from '../memory-monitor.js';
@@ -18,6 +19,10 @@ describe('formatSnapshotMeta', () => {
     externalMb: 2.345,
     systemAvailableMb: 3500.123,
     openFds: 42,
+    childProcesses: [
+      { pid: 100, rssMb: 300.123, command: 'node worker.js' },
+      { pid: 101, rssMb: 112.111, command: 'node helper.js' },
+    ],
     timestamp: '2026-03-23T00:00:00.000Z',
   };
 
@@ -32,6 +37,7 @@ describe('formatSnapshotMeta', () => {
       'openFds',
       'rssMb',
       'systemAvailableMb',
+      'topChildProcesses',
       'totalRssMb',
     ]);
   });
@@ -57,6 +63,17 @@ describe('formatSnapshotMeta', () => {
     const meta = formatSnapshotMeta(snapshot);
 
     expect(meta.openFds).toBe(42);
+  });
+
+  it('topChildProcesses is a valid JSON string', () => {
+    const meta = formatSnapshotMeta(snapshot);
+
+    expect(typeof meta.topChildProcesses).toBe('string');
+    const parsed = JSON.parse(meta.topChildProcesses as string);
+    expect(Array.isArray(parsed)).toBe(true);
+    expect(parsed).toHaveLength(2);
+    expect(parsed[0]).toEqual({ pid: 100, rssMb: 300.1, cmd: 'node worker.js' });
+    expect(parsed[1]).toEqual({ pid: 101, rssMb: 112.1, cmd: 'node helper.js' });
   });
 });
 
@@ -202,6 +219,40 @@ describe('getProcessTreeRss', () => {
 });
 
 
+describe('getProcessTreeBreakdown', () => {
+  it('returns empty array for empty pids', () => {
+    const result = getProcessTreeBreakdown([]);
+
+    expect(result).toEqual([]);
+  });
+
+  it('returns empty array for non-existent pid', () => {
+    const result = getProcessTreeBreakdown([999999999]);
+
+    expect(result).toEqual([]);
+  });
+
+  it('returns array with at least one entry for own process pid', () => {
+    const result = getProcessTreeBreakdown([process.pid]);
+
+    expect(result.length).toBeGreaterThanOrEqual(1);
+    for (const entry of result) {
+      expect(typeof entry.pid).toBe('number');
+      expect(typeof entry.rssMb).toBe('number');
+      expect(typeof entry.command).toBe('string');
+      expect(entry.rssMb).toBeGreaterThan(0);
+    }
+  });
+
+  it('entries are sorted descending by rssMb', () => {
+    const result = getProcessTreeBreakdown([process.pid]);
+
+    for (let i = 1; i < result.length; i++) {
+      expect(result[i - 1].rssMb).toBeGreaterThanOrEqual(result[i].rssMb);
+    }
+  });
+});
+
 describe('tryGarbageCollect', () => {
   it('returns a boolean', () => {
     const result = tryGarbageCollect();
@@ -227,6 +278,12 @@ describe('MemorySnapshot extended fields', () => {
 
     expect(typeof snapshot.childRssMb).toBe('number');
     expect(snapshot.childRssMb).toBeGreaterThanOrEqual(0);
+  });
+
+  it('returns childProcesses as an array', () => {
+    const snapshot = getMemorySnapshot();
+
+    expect(Array.isArray(snapshot.childProcesses)).toBe(true);
   });
 });
 
