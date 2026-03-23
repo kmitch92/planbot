@@ -776,11 +776,11 @@ describe("TicketSchema images field", () => {
 // =============================================================================
 
 describe("Memory Threshold Config", () => {
-  it("defaults memoryWarningMb to 768 and memoryCriticalMb to 1024", () => {
+  it("defaults memoryWarningMb to 4096 and memoryCriticalMb to 6144", () => {
     const result = ConfigSchema.parse({});
 
-    expect(result.memoryWarningMb).toBe(768);
-    expect(result.memoryCriticalMb).toBe(1024);
+    expect(result.memoryWarningMb).toBe(4096);
+    expect(result.memoryCriticalMb).toBe(6144);
   });
 
   it("accepts explicit memoryWarningMb and memoryCriticalMb values", () => {

@@ -77,8 +77,8 @@ config:
 #  planMode: true                  # Generate plans before execution (default: true)
 #
 #  # --- Resource Limits ---
-#  memoryWarningMb: 768              # Pause queue before next ticket when RSS exceeds this (MB). 0 = disabled (default: 768)
-#  memoryCriticalMb: 1024            # Abort current execution when RSS exceeds this (MB). 0 = disabled (default: 1024)
+#  memoryWarningMb: 4096              # Pause queue before next ticket when RSS exceeds this (MB). 0 = disabled (default: 4096)
+#  memoryCriticalMb: 6144            # Abort current execution when RSS exceeds this (MB). 0 = disabled (default: 6144)
 #  memoryCheckIntervalSec: 30        # How often to check memory in seconds (default: 30)
 #  diskFloorMb: 500                  # Pause queue when free disk drops below this (MB). 0 = disabled (default: 500)
 #
