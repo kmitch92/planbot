@@ -980,3 +980,90 @@ describe("MAX_STDERR_CHARS", () => {
     expect(MAX_STDERR_CHARS).toBe(50_000);
   });
 });
+
+// =============================================================================
+// NODE_OPTIONS Heap Limit Injection Tests
+// =============================================================================
+
+describe("Claude Wrapper - NODE_OPTIONS heap limit injection", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("generatePlan passes NODE_OPTIONS with --max-old-space-size in spawn env", async () => {
+    const mockProc = createMockProcess({
+      stdout: [
+        JSON.stringify({ type: "assistant", message: "Plan" }) + "\n",
+        JSON.stringify({ type: "result", result: "", cost_usd: 0.01 }) + "\n",
+      ],
+      exitCode: 0,
+    });
+    mockSpawn.mockReturnValue(mockProc);
+
+    await claude.generatePlan("Create a plan", { maxHeapMb: 4096 });
+
+    const spawnOptions = mockSpawn.mock.calls[0]?.[2] as Record<string, unknown>;
+    const env = spawnOptions?.env as Record<string, string> | undefined;
+    expect(env).toBeDefined();
+    expect(env?.NODE_OPTIONS).toContain("--max-old-space-size=4096");
+  });
+
+  it("execute passes NODE_OPTIONS with --max-old-space-size in spawn env", async () => {
+    const mockProc = createMockProcess({
+      stdout: [
+        JSON.stringify({ type: "result", result: "Done", session_id: "s1" }) + "\n",
+      ],
+      exitCode: 0,
+    });
+    mockSpawn.mockReturnValue(mockProc);
+
+    await claude.execute("Do task", { maxHeapMb: 4096 }, {});
+
+    const spawnOptions = mockSpawn.mock.calls[0]?.[2] as Record<string, unknown>;
+    const env = spawnOptions?.env as Record<string, string> | undefined;
+    expect(env).toBeDefined();
+    expect(env?.NODE_OPTIONS).toContain("--max-old-space-size=4096");
+  });
+
+  it("preserves existing NODE_OPTIONS from process.env when appending heap limit", async () => {
+    vi.stubEnv("NODE_OPTIONS", "--enable-source-maps");
+
+    const mockProc = createMockProcess({
+      stdout: [
+        JSON.stringify({ type: "result", result: "Done", session_id: "s1" }) + "\n",
+      ],
+      exitCode: 0,
+    });
+    mockSpawn.mockReturnValue(mockProc);
+
+    await claude.execute("Do task", { maxHeapMb: 8192 }, {});
+
+    const spawnOptions = mockSpawn.mock.calls[0]?.[2] as Record<string, unknown>;
+    const env = spawnOptions?.env as Record<string, string> | undefined;
+    expect(env).toBeDefined();
+    expect(env?.NODE_OPTIONS).toContain("--enable-source-maps");
+    expect(env?.NODE_OPTIONS).toContain("--max-old-space-size=8192");
+  });
+
+  it("runPrompt passes NODE_OPTIONS with --max-old-space-size in spawn env", async () => {
+    const mockProc = createMockProcess({
+      stdout: [
+        JSON.stringify({ type: "assistant", message: "Response" }) + "\n",
+        JSON.stringify({ type: "result", result: "", cost_usd: 0.01 }) + "\n",
+      ],
+      exitCode: 0,
+    });
+    mockSpawn.mockReturnValue(mockProc);
+
+    await claude.runPrompt("Quick prompt", { maxHeapMb: 4096 });
+
+    const spawnOptions = mockSpawn.mock.calls[0]?.[2] as Record<string, unknown>;
+    const env = spawnOptions?.env as Record<string, string> | undefined;
+    expect(env).toBeDefined();
+    expect(env?.NODE_OPTIONS).toContain("--max-old-space-size=4096");
+  });
+});

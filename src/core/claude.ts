@@ -104,6 +104,17 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
   private currentProcess: ChildProcess | null = null;
 
   /**
+   * Build env object with NODE_OPTIONS --max-old-space-size when maxHeapMb is provided.
+   */
+  private buildEnv(maxHeapMb?: number): Record<string, string | undefined> | undefined {
+    if (maxHeapMb == null) return undefined;
+    const heapFlag = `--max-old-space-size=${maxHeapMb}`;
+    const existing = process.env.NODE_OPTIONS;
+    const nodeOptions = existing ? `${existing} ${heapFlag}` : heapFlag;
+    return { ...process.env, NODE_OPTIONS: nodeOptions };
+  }
+
+  /**
    * Generate a plan using Claude's plan permission mode
    */
   async generatePlan(
@@ -111,7 +122,7 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
     options: ClaudeOptions = {},
     onOutput?: (text: string) => void,
   ): Promise<PlanResult> {
-    const { model, timeout = 900000, cwd, verbose } = options;
+    const { model, timeout = 900000, cwd, verbose, maxHeapMb } = options;
 
     logger.info("Generating plan with Claude", { model, timeout });
 
@@ -130,10 +141,12 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
         args.push("--model", model);
       }
 
+      const env = this.buildEnv(maxHeapMb);
       const proc = spawn("claude", args, {
         cwd,
         detached: true,
         stdio: ["pipe", "pipe", "pipe"],
+        ...(env ? { env } : {}),
       });
       processRegistry.register(proc, "claude-plan");
 
@@ -372,6 +385,7 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
       timeout = 1800000,
       cwd,
       verbose,
+      maxHeapMb,
     } = options;
 
     logger.debug("Executing with Claude", {
@@ -389,6 +403,7 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
         timeout,
         cwd,
         verbose,
+        maxHeapMb,
       },
       callbacks,
     );
@@ -409,6 +424,7 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
       timeout = 1800000,
       cwd,
       verbose,
+      maxHeapMb,
     } = options;
 
     logger.debug("Resuming Claude session", { sessionId, model });
@@ -423,6 +439,7 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
         cwd,
         resume: true,
         verbose,
+        maxHeapMb,
       },
       callbacks,
     );
@@ -474,6 +491,7 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
       timeout?: number;
       skipPermissions?: boolean;
       verbose?: boolean;
+      maxHeapMb?: number;
     } = {},
   ): Promise<{
     success: boolean;
@@ -481,7 +499,7 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
     error?: string;
     costUsd?: number;
   }> {
-    const { model, cwd, timeout = 300000, skipPermissions, verbose } = options;
+    const { model, cwd, timeout = 300000, skipPermissions, verbose, maxHeapMb } = options;
     const startTime = Date.now();
 
     logger.info("Running standalone prompt", {
@@ -506,10 +524,12 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
         args.push("--dangerously-skip-permissions");
       }
 
+      const env = this.buildEnv(maxHeapMb);
       const proc = spawn("claude", args, {
         cwd,
         detached: true,
         stdio: ["ignore", "pipe", "pipe"],
+        ...(env ? { env } : {}),
       });
       processRegistry.register(proc, "claude-prompt");
 
@@ -692,10 +712,11 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
       cwd?: string;
       resume?: boolean;
       verbose?: boolean;
+      maxHeapMb?: number;
     },
     callbacks: ExecutionCallbacks,
   ): Promise<ExecutionResult> {
-    const { model, sessionId, skipPermissions, timeout, cwd, resume, verbose } =
+    const { model, sessionId, skipPermissions, timeout, cwd, resume, verbose, maxHeapMb } =
       options;
 
     return new Promise((resolve) => {
@@ -723,10 +744,12 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
         args.push("--dangerously-skip-permissions");
       }
 
+      const env = this.buildEnv(maxHeapMb);
       const proc = spawn("claude", args, {
         cwd,
         detached: true,
         stdio: ["pipe", "pipe", "pipe"],
+        ...(env ? { env } : {}),
       });
       processRegistry.register(proc, "claude-exec");
 
