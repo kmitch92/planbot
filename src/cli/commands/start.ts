@@ -37,6 +37,7 @@ import {
 } from "../../utils/session-report.js";
 import { getMemorySnapshot } from "../../utils/memory-monitor.js";
 import { processRegistry } from "../../utils/process-lifecycle.js";
+import { formatMemoryInfo } from "./progress-format.js";
 
 // =============================================================================
 // Types
@@ -517,6 +518,7 @@ interface ExecutionProgress {
 }
 
 let progress: ExecutionProgress | null = null;
+let activeOrchestrator: Orchestrator | null = null;
 
 function startProgressTracker(): void {
   progress = {
@@ -545,6 +547,7 @@ function stopProgressTracker(): void {
     printProgressLine(); // Print final state
   }
   progress = null;
+  activeOrchestrator = null;
 }
 
 function formatElapsed(ms: number): string {
@@ -580,6 +583,12 @@ function printProgressLine(): void {
     parts.push(toolPart);
   }
 
+  // Memory info from orchestrator's monitor (includes child process data)
+  const snap = activeOrchestrator?.getMemorySnapshot();
+  if (snap) {
+    parts.push(formatMemoryInfo(snap));
+  }
+
   console.log(chalk.dim(`  ⟳ ${parts.join(" | ")}`));
 }
 
@@ -592,6 +601,8 @@ function setupEventHandlers(
   _spinner: ReturnType<typeof ora>,
   dryRun: boolean,
 ): void {
+  activeOrchestrator = orchestrator;
+
   orchestrator.on("ticket:start", (ticket) => {
     console.log(chalk.blue.bold(`\n>>> Starting: ${ticket.title}`));
     console.log(chalk.dim(`    ID: ${ticket.id}`));
