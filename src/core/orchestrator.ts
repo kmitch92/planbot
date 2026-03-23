@@ -43,6 +43,7 @@ import {
   tryGarbageCollect,
   formatSnapshotMeta,
   type MemoryMonitor,
+  type MemorySnapshot,
 } from "../utils/memory-monitor.js";
 import { processRegistry } from "../utils/process-lifecycle.js";
 import { interruptibleDelay } from "../utils/interruptible-delay.js";
@@ -120,6 +121,7 @@ export interface Orchestrator extends EventEmitter<OrchestratorEvents> {
   isRunning(): boolean;
   queueTicket(ticket: Ticket): Promise<void>;
   getTickets(): Ticket[];
+  getMemorySnapshot(): MemorySnapshot | null;
 }
 
 // =============================================================================
@@ -414,6 +416,10 @@ class OrchestratorImpl
   getTickets(): Ticket[] {
     const fileTickets = this.ticketsFile?.tickets ?? [];
     return [...fileTickets, ...this.dynamicTickets];
+  }
+
+  getMemorySnapshot(): MemorySnapshot | null {
+    return this.memoryMonitor?.getLatest() ?? null;
   }
 
   // ===========================================================================
