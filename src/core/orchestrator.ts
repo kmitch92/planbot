@@ -202,7 +202,7 @@ class OrchestratorImpl
       this.stopRequested = false;
 
       const config = this.ticketsFile!.config;
-      if (config.memoryWarningMb > 0 || config.memoryCriticalMb > 0) {
+      if (config.memoryWarningMb > 0 || config.memoryCriticalMb > 0 || config.systemAvailableMinMb > 0) {
         this.memoryMonitor = createMemoryMonitor();
         this.memoryMonitor.start({
           intervalSec: config.memoryCheckIntervalSec,
@@ -219,6 +219,8 @@ class OrchestratorImpl
           onCritical: (snapshot) => {
             logger.error("Memory CRITICAL - aborting current execution", {
               rssMb: snapshot.rssMb.toFixed(1),
+              childRssMb: snapshot.childRssMb.toFixed(1),
+              systemAvailableMb: snapshot.systemAvailableMb.toFixed(1),
               criticalMb: config.memoryCriticalMb,
             });
             claude.abort();
