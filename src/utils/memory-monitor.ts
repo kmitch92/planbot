@@ -36,19 +36,38 @@ export function getMemorySnapshot(): MemorySnapshot {
 }
 
 export function getProcessTreeRss(pids: number[]): number {
-  let totalMb = 0;
-  for (const pid of pids) {
+  const visited = new Set<number>();
+  const queue: number[] = [...pids];
+  let totalKb = 0;
+
+  while (queue.length > 0) {
+    const pid = queue.pop()!;
+    if (visited.has(pid)) continue;
+    visited.add(pid);
+
     try {
-      const content = readFileSync(`/proc/${pid}/status`, 'utf-8');
-      const match = content.match(/^VmRSS:\s+(\d+)\s+kB$/m);
+      const status = readFileSync(`/proc/${pid}/status`, 'utf-8');
+      const match = status.match(/^VmRSS:\s+(\d+)\s+kB$/m);
       if (match) {
-        totalMb += Number(match[1]) / 1024;
+        totalKb += Number(match[1]);
       }
     } catch {
-      // Non-existent pid or permission error — skip
+      // Process exited or permission error — skip
+      continue;
+    }
+
+    try {
+      const children = readFileSync(`/proc/${pid}/task/${pid}/children`, 'utf-8');
+      const childPids = children.trim().split(/\s+/).filter(Boolean).map(Number);
+      for (const child of childPids) {
+        queue.push(child);
+      }
+    } catch {
+      // No children file — continue
     }
   }
-  return totalMb;
+
+  return totalKb / 1024;
 }
 
 export function tryGarbageCollect(): boolean {
@@ -144,8 +163,8 @@ export function createMemoryMonitor(): MemoryMonitor {
 
           const rssCritical = config.criticalMb > 0 && totalRss >= config.criticalMb;
           const systemCritical =
-            config.systemAvailableMinMb > 0 &&
-            latest.systemAvailableMb < config.systemAvailableMinMb;
+            (config.systemAvailableMinMb ?? 0) > 0 &&
+            latest.systemAvailableMb < (config.systemAvailableMinMb ?? 0);
 
           if (rssCritical || systemCritical) {
             config.onCritical(latest);
