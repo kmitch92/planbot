@@ -280,3 +280,118 @@ describe('createMemoryMonitor dual-threshold', () => {
     expect(getChildPids.mock.calls.length).toBeGreaterThanOrEqual(3);
   });
 });
+
+describe('createMemoryMonitor system-available-memory threshold', () => {
+  const realFreemem = vi.hoisted(() => {
+    return { value: 0 };
+  });
+
+  vi.mock('node:os', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('node:os')>();
+    return {
+      ...actual,
+      default: {
+        ...actual,
+        freemem: () => realFreemem.value,
+      },
+    };
+  });
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('fires onCritical when system available memory drops below systemAvailableMinMb', async () => {
+    realFreemem.value = 1500 * 1024 * 1024;
+
+    const { createMemoryMonitor: createMon } = await import('../memory-monitor.js');
+    const onWarning = vi.fn();
+    const onCritical = vi.fn();
+    const monitor = createMon();
+
+    monitor.start({
+      intervalSec: 1,
+      warningMb: 999999,
+      criticalMb: 999999,
+      onWarning,
+      onCritical,
+      systemAvailableMinMb: 2048,
+    });
+    vi.advanceTimersByTime(1_000);
+    monitor.stop();
+
+    expect(onCritical).toHaveBeenCalled();
+  });
+
+  it('does not fire onCritical when system available memory is above systemAvailableMinMb', async () => {
+    realFreemem.value = 3000 * 1024 * 1024;
+
+    const { createMemoryMonitor: createMon } = await import('../memory-monitor.js');
+    const onWarning = vi.fn();
+    const onCritical = vi.fn();
+    const monitor = createMon();
+
+    monitor.start({
+      intervalSec: 1,
+      warningMb: 999999,
+      criticalMb: 999999,
+      onWarning,
+      onCritical,
+      systemAvailableMinMb: 2048,
+    });
+    vi.advanceTimersByTime(1_000);
+    monitor.stop();
+
+    expect(onCritical).not.toHaveBeenCalled();
+  });
+
+  it('does not fire onCritical for system memory when systemAvailableMinMb is 0 (disabled)', async () => {
+    realFreemem.value = 500 * 1024 * 1024;
+
+    const { createMemoryMonitor: createMon } = await import('../memory-monitor.js');
+    const onWarning = vi.fn();
+    const onCritical = vi.fn();
+    const monitor = createMon();
+
+    monitor.start({
+      intervalSec: 1,
+      warningMb: 999999,
+      criticalMb: 999999,
+      onWarning,
+      onCritical,
+      systemAvailableMinMb: 0,
+    });
+    vi.advanceTimersByTime(1_000);
+    monitor.stop();
+
+    expect(onCritical).not.toHaveBeenCalled();
+  });
+
+  it('triggers onCritical for low system memory even when RSS is below thresholds', async () => {
+    realFreemem.value = 1000 * 1024 * 1024;
+
+    const { createMemoryMonitor: createMon } = await import('../memory-monitor.js');
+    const onWarning = vi.fn();
+    const onCritical = vi.fn();
+    const monitor = createMon();
+
+    monitor.start({
+      intervalSec: 1,
+      warningMb: 999999,
+      criticalMb: 999999,
+      onWarning,
+      onCritical,
+      systemAvailableMinMb: 2048,
+    });
+    vi.advanceTimersByTime(1_000);
+    monitor.stop();
+
+    expect(onCritical).toHaveBeenCalled();
+    const snapshot = onCritical.mock.calls[0][0];
+    expect(snapshot.systemAvailableMb).toBeLessThan(2048);
+  });
+});

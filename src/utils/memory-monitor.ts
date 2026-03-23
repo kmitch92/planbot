@@ -84,6 +84,7 @@ export interface MemoryMonitorConfig {
   onWarning: (snapshot: MemorySnapshot) => void;
   onCritical: (snapshot: MemorySnapshot) => void;
   getChildPids?: () => number[];
+  systemAvailableMinMb?: number;
 }
 
 export interface MemoryMonitor {
@@ -141,7 +142,12 @@ export function createMemoryMonitor(): MemoryMonitor {
           latest.childRssMb = childRss;
           const totalRss = latest.rssMb + childRss;
 
-          if (config.criticalMb > 0 && totalRss >= config.criticalMb) {
+          const rssCritical = config.criticalMb > 0 && totalRss >= config.criticalMb;
+          const systemCritical =
+            config.systemAvailableMinMb > 0 &&
+            latest.systemAvailableMb < config.systemAvailableMinMb;
+
+          if (rssCritical || systemCritical) {
             config.onCritical(latest);
           } else if (config.warningMb > 0 && totalRss >= config.warningMb) {
             config.onWarning(latest);
