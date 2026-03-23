@@ -75,6 +75,7 @@ vi.mock("../../utils/memory-monitor.js", () => ({
     openFds: 20,
     systemAvailableMb: 4000,
     childRssMb: 0,
+    childProcesses: [],
     timestamp: new Date().toISOString(),
   })),
   tryGarbageCollect: vi.fn().mockReturnValue(false),
@@ -87,6 +88,13 @@ vi.mock("../../utils/memory-monitor.js", () => ({
     externalMb: +snapshot.externalMb.toFixed(1),
     systemAvailableMb: +snapshot.systemAvailableMb.toFixed(1),
     openFds: snapshot.openFds,
+    topChildProcesses: JSON.stringify(
+      (snapshot.childProcesses || []).slice(0, 5).map(p => ({
+        pid: p.pid,
+        rssMb: +p.rssMb.toFixed(1),
+        cmd: p.command,
+      }))
+    ),
   })),
 }));
 
@@ -160,6 +168,7 @@ function createCriticalSnapshot(overrides: Partial<MemorySnapshot> = {}): Memory
     openFds: 50,
     systemAvailableMb: 25,
     childRssMb: 5000,
+    childProcesses: [],
     timestamp: new Date().toISOString(),
     ...overrides,
   };
