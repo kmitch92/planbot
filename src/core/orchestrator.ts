@@ -203,6 +203,8 @@ class OrchestratorImpl
 
       const config = this.ticketsFile!.config;
       if (config.memoryWarningMb > 0 || config.memoryCriticalMb > 0 || config.systemAvailableMinMb > 0) {
+        let criticalHitCount = 0;
+        const CRITICAL_ESCALATION_THRESHOLD = 3;
         this.memoryMonitor = createMemoryMonitor();
         this.memoryMonitor.start({
           intervalSec: config.memoryCheckIntervalSec,
@@ -217,6 +219,7 @@ class OrchestratorImpl
             this.pauseRequested = true;
           },
           onCritical: (snapshot) => {
+            criticalHitCount++;
             logger.error("Memory CRITICAL - aborting current execution", {
               rssMb: snapshot.rssMb.toFixed(1),
               childRssMb: snapshot.childRssMb.toFixed(1),
@@ -224,7 +227,13 @@ class OrchestratorImpl
               criticalMb: config.memoryCriticalMb,
             });
             claude.abort();
+            if (criticalHitCount >= CRITICAL_ESCALATION_THRESHOLD) {
+              processRegistry.killAllImmediate().catch(() => {});
+            } else {
+              processRegistry.killAll().catch(() => {});
+            }
             this.pauseRequested = true;
+            stateManager.update(this.projectRoot, { pauseRequested: true }).catch(() => {});
           },
           getChildPids: () => processRegistry.getActivePids(),
         });
