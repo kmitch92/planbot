@@ -91,6 +91,7 @@ vi.mock("../../utils/logger.js", () => ({
 }));
 
 import { claude } from "../claude.js";
+import { logger } from "../../utils/logger.js";
 
 function createMockMultiplexer(): Multiplexer {
   return {
@@ -292,6 +293,99 @@ tickets:
         expect.any(String),
         expect.objectContaining({ maxHeapMb: 4096 }),
         expect.any(Object)
+      );
+    });
+  });
+
+  describe("onCritical log includes full snapshot context", () => {
+    it("logs systemAvailableMb and childRssMb from the snapshot when onCritical fires", async () => {
+      const ticketsContent = `
+config:
+  autoApprove: true
+  memoryWarningMb: 512
+  memoryCriticalMb: 1024
+  systemAvailableMinMb: 2048
+tickets:
+  - id: crit-log-1
+    title: Critical Log Context Test
+    description: Verify onCritical log includes systemAvailableMb and childRssMb
+    status: pending
+`;
+      await writeFile(ticketsFilePath, ticketsContent);
+
+      const orchestrator = createOrchestrator({
+        projectRoot: testDir,
+        ticketsFile: ticketsFilePath,
+        multiplexer,
+        dryRun: true,
+      });
+
+      await orchestrator.start();
+
+      const startCall = mockMemoryMonitor.start.mock.calls[0][0];
+      const criticalCallback = startCall.onCritical as (snapshot: {
+        rssMb: number;
+        heapUsedMb: number;
+        heapTotalMb: number;
+        externalMb: number;
+        openFds: number;
+        systemAvailableMb: number;
+        childRssMb: number;
+        timestamp: string;
+      }) => void;
+
+      criticalCallback({
+        rssMb: 93.5,
+        heapUsedMb: 50,
+        heapTotalMb: 200,
+        externalMb: 10,
+        openFds: 20,
+        systemAvailableMb: 1500,
+        childRssMb: 250,
+        timestamp: new Date().toISOString(),
+      });
+
+      const mockLogger = vi.mocked(logger);
+      expect(mockLogger.error).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({
+          systemAvailableMb: "1500.0",
+          childRssMb: "250.0",
+        })
+      );
+    });
+  });
+
+  describe("monitor starts when only systemAvailableMinMb is set", () => {
+    it("starts memory monitor when memoryWarningMb and memoryCriticalMb are 0 but systemAvailableMinMb > 0", async () => {
+      const ticketsContent = `
+config:
+  autoApprove: true
+  memoryWarningMb: 0
+  memoryCriticalMb: 0
+  systemAvailableMinMb: 2048
+tickets:
+  - id: sys-only-1
+    title: System-Only Monitor Start Test
+    description: Verify monitor starts with only systemAvailableMinMb set
+    status: pending
+`;
+      await writeFile(ticketsFilePath, ticketsContent);
+
+      const orchestrator = createOrchestrator({
+        projectRoot: testDir,
+        ticketsFile: ticketsFilePath,
+        multiplexer,
+        dryRun: true,
+      });
+
+      await orchestrator.start();
+
+      expect(mockMemoryMonitor.start).toHaveBeenCalledTimes(1);
+      expect(mockMemoryMonitor.start).toHaveBeenCalledWith(
+        expect.objectContaining({
+          systemAvailableMinMb: 2048,
+        })
       );
     });
   });

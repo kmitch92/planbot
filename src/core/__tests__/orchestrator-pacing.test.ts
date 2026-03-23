@@ -67,6 +67,32 @@ vi.mock("../claude.js", () => ({
   },
 }));
 
+vi.mock("../../utils/memory-monitor.js", () => ({
+  createMemoryMonitor: vi.fn(() => ({
+    start: vi.fn(),
+    stop: vi.fn(),
+    isAboveWarning: vi.fn().mockReturnValue(false),
+    isAboveCeiling: vi.fn().mockReturnValue(false),
+    getLatest: vi.fn().mockReturnValue(null),
+  })),
+  getMemorySnapshot: vi.fn(() => ({
+    rssMb: 100,
+    heapUsedMb: 50,
+    heapTotalMb: 200,
+    externalMb: 10,
+    openFds: 20,
+    systemAvailableMb: 4000,
+    childRssMb: 0,
+    timestamp: new Date().toISOString(),
+  })),
+  getDiskSnapshot: vi.fn().mockResolvedValue({
+    totalMb: 100000,
+    availableMb: 50000,
+    usedPercent: 50,
+  }),
+  tryGarbageCollect: vi.fn().mockReturnValue(false),
+}));
+
 vi.mock("../../utils/logger.js", () => ({
   logger: {
     debug: vi.fn(),
