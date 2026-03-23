@@ -308,6 +308,8 @@ export const ConfigSchema = z.object({
   maxClaudeHeapMb: z.number().int().positive().default(4096),
   /** Minimum system available memory in MB. When free memory drops below this, triggers critical. 0 = disabled (default: 2048). */
   systemAvailableMinMb: z.number().int().nonnegative().default(2048),
+  /** Maximum wall-clock time in ms for a single ticket (including retries). 0 = disabled (default: "2h" = 7200000ms). */
+  maxTotalTicketTime: DurationSchema.default("2h"),
 }).transform((val) => {
   // Map deprecated memoryCeilingMb to memoryWarningMb if warning was not explicitly provided
   if (val.memoryCeilingMb !== undefined && val.memoryWarningMb === 768) {

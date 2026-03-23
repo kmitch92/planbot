@@ -23,6 +23,7 @@ import {
   ImagePathSchema,
   SUPPORTED_IMAGE_EXTENSIONS,
   MAX_IMAGES_PER_TICKET,
+  TicketsFileSchema,
 } from "../schemas.js";
 
 // =============================================================================
@@ -905,5 +906,66 @@ describe("systemAvailableMinMb Config", () => {
     });
 
     expect(result.success).toBe(false);
+  });
+});
+
+// =============================================================================
+// maxTotalTicketTime Config Tests
+// =============================================================================
+
+describe("maxTotalTicketTime Config", () => {
+  it("defaults to 7200000 (2 hours) when not provided", () => {
+    const result = ConfigSchema.parse({});
+
+    expect(result.maxTotalTicketTime).toBe(7200000);
+  });
+
+  it("accepts explicit duration string like '30m' and converts to ms", () => {
+    const result = ConfigSchema.parse({
+      maxTotalTicketTime: "30m",
+    });
+
+    expect(result.maxTotalTicketTime).toBe(1800000);
+  });
+
+  it("accepts numeric value as raw milliseconds", () => {
+    const result = ConfigSchema.parse({
+      maxTotalTicketTime: 60000,
+    });
+
+    expect(result.maxTotalTicketTime).toBe(60000);
+  });
+
+  it("accepts 0 to disable the wall-clock cap", () => {
+    const result = ConfigSchema.parse({
+      maxTotalTicketTime: 0,
+    });
+
+    expect(result.maxTotalTicketTime).toBe(0);
+  });
+
+  it("rejects negative numbers", () => {
+    const result = ConfigSchema.safeParse({
+      maxTotalTicketTime: -1000,
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects invalid duration strings", () => {
+    const result = ConfigSchema.safeParse({
+      maxTotalTicketTime: "invalid",
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it("is accessible via TicketsFileSchema config", () => {
+    const result = TicketsFileSchema.parse({
+      config: { maxTotalTicketTime: "1h" },
+      tickets: [{ id: "t1", title: "Test", description: "desc" }],
+    });
+
+    expect(result.config.maxTotalTicketTime).toBe(3600000);
   });
 });
