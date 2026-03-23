@@ -168,3 +168,51 @@ describe('ProcessRegistry', () => {
     expect(processRegistry.getActivePids()).not.toContain(pid);
   }, 10_000);
 });
+
+describe('ProcessRegistry.killAllImmediate', () => {
+  let procs: ChildProcess[];
+
+  beforeEach(() => {
+    procs = [];
+  });
+
+  afterEach(async () => {
+    for (const p of procs) {
+      try {
+        p.kill('SIGKILL');
+      } catch {
+        // already dead
+      }
+    }
+  });
+
+  it('sends SIGKILL directly without SIGTERM grace period', async () => {
+    const p1 = spawn('sh', ['-c', 'trap "" TERM; sleep 60'], {
+      detached: true,
+      stdio: 'ignore',
+    });
+    const p2 = spawn('sh', ['-c', 'trap "" TERM; sleep 60'], {
+      detached: true,
+      stdio: 'ignore',
+    });
+    procs.push(p1, p2);
+
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    processRegistry.register(p1, 'sigkill-test-p1');
+    processRegistry.register(p2, 'sigkill-test-p2');
+
+    const start = Date.now();
+    await processRegistry.killAllImmediate();
+    const elapsed = Date.now() - start;
+
+    expect(p1.exitCode !== null || p1.signalCode !== null).toBe(true);
+    expect(p2.exitCode !== null || p2.signalCode !== null).toBe(true);
+    expect(elapsed).toBeLessThan(1000);
+    expect(processRegistry.getActiveCount()).toBe(0);
+  }, 10_000);
+
+  it('resolves when no processes are registered', async () => {
+    await expect(processRegistry.killAllImmediate()).resolves.toBeUndefined();
+  });
+});
