@@ -162,6 +162,7 @@ class OrchestratorImpl
   private stopRequested = false;
   private dynamicTickets: Ticket[] = [];
   private suppressCompletion = false;
+  private ticketStartTime = 0;
 
   private memoryMonitor: MemoryMonitor | null = null;
   private pendingApprovals = new Map<string, PendingApprovalResolvers>();
@@ -473,8 +474,32 @@ class OrchestratorImpl
       return null;
     }
 
+    // Clip wait to remaining ticket time (wall-clock cap)
+    let effectiveWaitMs = waitResult.waitMs;
+    const maxTotalTicketTimeMs = config.maxTotalTicketTime;
+    if (maxTotalTicketTimeMs > 0 && this.ticketStartTime > 0) {
+      const elapsed = Date.now() - this.ticketStartTime;
+      const remaining = maxTotalTicketTimeMs - elapsed;
+      if (remaining <= 0) {
+        logger.info("Rate limit retry skipped: ticket wall-clock time exceeded", {
+          ticketId,
+          elapsed,
+          maxTotalTicketTimeMs,
+        });
+        return null;
+      }
+      if (effectiveWaitMs > remaining) {
+        logger.info("Rate limit wait clipped to remaining ticket time", {
+          ticketId,
+          originalWaitMs: effectiveWaitMs,
+          clippedWaitMs: remaining,
+        });
+        effectiveWaitMs = remaining;
+      }
+    }
+
     logger.info("Rate limit retry: waiting for reset", {
-      waitMs: waitResult.waitMs,
+      waitMs: effectiveWaitMs,
       reason: waitResult.reason,
       resetsAt,
       ticketId,
@@ -487,7 +512,7 @@ class OrchestratorImpl
           ticketId,
           ticketTitle: ticketId,
           status: "waiting",
-          message: `Rate limit hit — waiting ${formatDuration(waitResult.waitMs)} for reset before retry`,
+          message: `Rate limit hit — waiting ${formatDuration(effectiveWaitMs)} for reset before retry`,
         })
         .catch((err) =>
           logger.warn("Failed to broadcast rate limit wait status", {
@@ -498,7 +523,7 @@ class OrchestratorImpl
 
     // Wait using existing interruptible delay infrastructure
     const delayCompleted = await this.applyDelay(
-      waitResult.waitMs,
+      effectiveWaitMs,
       "rateLimitRetry",
       ticketId,
     );
@@ -874,6 +899,9 @@ class OrchestratorImpl
     globalHooks?: Hooks,
     initialFeedback?: string,
   ): Promise<void> {
+    // Record wall-clock start for per-ticket time cap
+    this.ticketStartTime = Date.now();
+
     logger.setContext({ ticketId: ticket.id });
     logger.info("Processing ticket", { title: ticket.title });
 
@@ -1327,12 +1355,24 @@ class OrchestratorImpl
 
     let retries = 0;
     const maxRetries = config.maxRetries;
+    const maxTotalTicketTimeMs = config.maxTotalTicketTime;
     const isAutonomous =
       (ticket.planMode ?? config.planMode) === false || config.autoApprove;
 
     while (retries <= maxRetries) {
+      // Wall-clock cap: abort if ticket has exceeded its time limit
+      if (
+        maxTotalTicketTimeMs > 0 &&
+        Date.now() - this.ticketStartTime >= maxTotalTicketTimeMs
+      ) {
+        throw new Error(
+          `Ticket wall-clock time limit exceeded (${maxTotalTicketTimeMs}ms)`,
+        );
+      }
+
       try {
-        const result = await this.agent.execute(
+        // Build the execution promise
+        const executePromise = this.agent.execute(
           prompt,
           {
             model: config.model,
@@ -1347,6 +1387,36 @@ class OrchestratorImpl
             onOutput: (text) => this.handleOutput(ticket, text),
           },
         );
+
+        // Race execution against wall-clock cap if enabled
+        let result: Awaited<typeof executePromise>;
+        const remainingMs =
+          maxTotalTicketTimeMs > 0
+            ? maxTotalTicketTimeMs - (Date.now() - this.ticketStartTime)
+            : 0;
+
+        if (maxTotalTicketTimeMs > 0 && remainingMs > 0) {
+          let timeoutHandle: ReturnType<typeof setTimeout>;
+          const timeoutPromise = new Promise<"TICKET_TIMEOUT">((resolve) => {
+            timeoutHandle = setTimeout(() => resolve("TICKET_TIMEOUT"), remainingMs);
+          });
+          const raceResult = await Promise.race([executePromise, timeoutPromise]);
+          clearTimeout(timeoutHandle!);
+          if (raceResult === "TICKET_TIMEOUT") {
+            throw new Error(
+              `Ticket wall-clock time limit exceeded (${maxTotalTicketTimeMs}ms)`,
+            );
+          }
+          result = raceResult;
+        } else if (maxTotalTicketTimeMs > 0 && remainingMs <= 0) {
+          // Safety net: the while-head check already guards against this, but time
+          // can pass between that check and here under load.
+          throw new Error(
+            `Ticket wall-clock time limit exceeded (${maxTotalTicketTimeMs}ms)`,
+          );
+        } else {
+          result = await executePromise;
+        }
 
         // Rate limit detection and automatic fallback
         if (
@@ -1365,6 +1435,17 @@ class OrchestratorImpl
               fallbackModel: config.fallbackModel,
             },
           );
+
+          // Wall-clock cap: check before fallback attempt
+          if (maxTotalTicketTimeMs > 0) {
+            const ticketElapsed = Date.now() - this.ticketStartTime;
+            const ticketRemaining = maxTotalTicketTimeMs - ticketElapsed;
+            if (ticketRemaining <= 0 || ticketRemaining < ticketElapsed) {
+              throw new Error(
+                `Ticket wall-clock time limit exceeded (${maxTotalTicketTimeMs}ms)`,
+              );
+            }
+          }
 
           // Retry with fallback model
           const fallbackResult = await this.agent.execute(
@@ -1527,6 +1608,25 @@ class OrchestratorImpl
       } catch (err) {
         retries++;
         const error = err instanceof Error ? err : new Error(String(err));
+
+        // Wall-clock cap: abort without retrying if time exceeded or insufficient remaining
+        if (maxTotalTicketTimeMs > 0) {
+          const elapsed = Date.now() - this.ticketStartTime;
+          const remaining = maxTotalTicketTimeMs - elapsed;
+          if (remaining <= 0 || remaining < elapsed) {
+            ticket.status = "failed";
+            await this.saveTicketsFile();
+            await this.executeHooks(hooks, "onError", {
+              ticketId: ticket.id,
+              ticketTitle: ticket.title,
+              error: `Ticket wall-clock time limit exceeded (${maxTotalTicketTimeMs}ms)`,
+              cwd: effectiveCwd,
+            });
+            throw new Error(
+              `Ticket wall-clock time limit exceeded (${maxTotalTicketTimeMs}ms)`,
+            );
+          }
+        }
 
         if (retries > maxRetries) {
           ticket.status = "failed";
