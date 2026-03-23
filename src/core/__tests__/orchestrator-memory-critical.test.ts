@@ -78,6 +78,16 @@ vi.mock("../../utils/memory-monitor.js", () => ({
     timestamp: new Date().toISOString(),
   })),
   tryGarbageCollect: vi.fn().mockReturnValue(false),
+  formatSnapshotMeta: vi.fn((snapshot: MemorySnapshot) => ({
+    rssMb: +snapshot.rssMb.toFixed(1),
+    childRssMb: +snapshot.childRssMb.toFixed(1),
+    totalRssMb: +(snapshot.rssMb + snapshot.childRssMb).toFixed(1),
+    heapUsedMb: +snapshot.heapUsedMb.toFixed(1),
+    heapTotalMb: +snapshot.heapTotalMb.toFixed(1),
+    externalMb: +snapshot.externalMb.toFixed(1),
+    systemAvailableMb: +snapshot.systemAvailableMb.toFixed(1),
+    openFds: snapshot.openFds,
+  })),
 }));
 
 const { mockProcessRegistry } = vi.hoisted(() => ({
@@ -110,6 +120,7 @@ vi.mock("../../utils/logger.js", () => ({
 
 import { claude } from "../claude.js";
 import { stateManager } from "../state.js";
+import { logger } from "../../utils/logger.js";
 
 function createMockMultiplexer(): Multiplexer {
   return {
@@ -319,6 +330,89 @@ describe("Orchestrator memory critical handling", () => {
       onCritical(createCriticalSnapshot());
 
       expect(mockProcessRegistry.killAllImmediate).toHaveBeenCalledTimes(3);
+    });
+  });
+
+  describe("enriched log metadata in callbacks", () => {
+    it("onWarning log includes full snapshot metadata and threshold flags", async () => {
+      await writeFile(ticketsFilePath, TICKETS_YAML);
+
+      const orchestrator = createOrchestrator({
+        projectRoot: testDir,
+        ticketsFile: ticketsFilePath,
+        multiplexer,
+        dryRun: true,
+      });
+
+      await orchestrator.start();
+
+      const startCall = mockMemoryMonitor.start.mock.calls[0][0];
+      const onWarning = startCall.onWarning as (snapshot: MemorySnapshot) => void;
+
+      const snapshot = createCriticalSnapshot({ rssMb: 600, childRssMb: 200 });
+      onWarning(snapshot);
+
+      const mockLogger = vi.mocked(logger);
+      expect(mockLogger.warn).toHaveBeenCalledWith(
+        "Memory warning threshold hit",
+        expect.objectContaining({
+          rssMb: expect.any(Number),
+          childRssMb: expect.any(Number),
+          totalRssMb: expect.any(Number),
+          heapUsedMb: expect.any(Number),
+          heapTotalMb: expect.any(Number),
+          externalMb: expect.any(Number),
+          systemAvailableMb: expect.any(Number),
+          openFds: expect.any(Number),
+          warningMb: 512,
+          warningHit: true,
+          criticalMb: 1024,
+          criticalHit: false,
+          systemAvailableMinMb: 2048,
+          systemAvailableHit: false,
+        }),
+      );
+    });
+
+    it("onCritical log includes threshold status flags and escalation count", async () => {
+      await writeFile(ticketsFilePath, TICKETS_YAML);
+
+      const orchestrator = createOrchestrator({
+        projectRoot: testDir,
+        ticketsFile: ticketsFilePath,
+        multiplexer,
+        dryRun: true,
+      });
+
+      await orchestrator.start();
+
+      const startCall = mockMemoryMonitor.start.mock.calls[0][0];
+      const onCritical = startCall.onCritical as (snapshot: MemorySnapshot) => void;
+
+      const snapshot = createCriticalSnapshot({ rssMb: 7000, childRssMb: 5000, systemAvailableMb: 25 });
+      onCritical(snapshot);
+
+      const mockLogger = vi.mocked(logger);
+      expect(mockLogger.error).toHaveBeenCalledWith(
+        "Memory CRITICAL - aborting current execution",
+        expect.objectContaining({
+          rssMb: expect.any(Number),
+          childRssMb: expect.any(Number),
+          totalRssMb: expect.any(Number),
+          heapUsedMb: expect.any(Number),
+          heapTotalMb: expect.any(Number),
+          externalMb: expect.any(Number),
+          systemAvailableMb: expect.any(Number),
+          openFds: expect.any(Number),
+          warningMb: 512,
+          warningHit: true,
+          criticalMb: 1024,
+          criticalHit: true,
+          systemAvailableMinMb: 2048,
+          systemAvailableHit: true,
+          escalationCount: 1,
+        }),
+      );
     });
   });
 });

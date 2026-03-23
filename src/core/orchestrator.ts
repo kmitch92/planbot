@@ -41,6 +41,7 @@ import {
   getMemorySnapshot,
   getDiskSnapshot,
   tryGarbageCollect,
+  formatSnapshotMeta,
   type MemoryMonitor,
 } from "../utils/memory-monitor.js";
 import { processRegistry } from "../utils/process-lifecycle.js";
@@ -213,18 +214,30 @@ class OrchestratorImpl
           systemAvailableMinMb: config.systemAvailableMinMb,
           onWarning: (snapshot) => {
             logger.warn("Memory warning threshold hit", {
-              rssMb: snapshot.rssMb.toFixed(1),
+              ...formatSnapshotMeta(snapshot),
               warningMb: config.memoryWarningMb,
+              warningHit: true,
+              criticalMb: config.memoryCriticalMb,
+              criticalHit: false,
+              systemAvailableMinMb: config.systemAvailableMinMb,
+              systemAvailableHit: false,
             });
             this.pauseRequested = true;
           },
           onCritical: (snapshot) => {
             criticalHitCount++;
+            const totalRssMb = snapshot.rssMb + snapshot.childRssMb;
+            const rssCritical = config.memoryCriticalMb > 0 && totalRssMb >= config.memoryCriticalMb;
+            const systemCritical = config.systemAvailableMinMb > 0 && snapshot.systemAvailableMb < config.systemAvailableMinMb;
             logger.error("Memory CRITICAL - aborting current execution", {
-              rssMb: snapshot.rssMb.toFixed(1),
-              childRssMb: snapshot.childRssMb.toFixed(1),
-              systemAvailableMb: snapshot.systemAvailableMb.toFixed(1),
+              ...formatSnapshotMeta(snapshot),
+              warningMb: config.memoryWarningMb,
+              warningHit: true,
               criticalMb: config.memoryCriticalMb,
+              criticalHit: rssCritical,
+              systemAvailableMinMb: config.systemAvailableMinMb,
+              systemAvailableHit: systemCritical,
+              escalationCount: criticalHitCount,
             });
             claude.abort();
             if (criticalHitCount >= CRITICAL_ESCALATION_THRESHOLD) {
@@ -604,8 +617,10 @@ class OrchestratorImpl
       }
 
       if (this.memoryMonitor?.isAboveWarning()) {
+        const snap = this.memoryMonitor.getLatest();
         logger.warn(
           "Memory above warning threshold before processing next ticket, pausing queue",
+          snap ? formatSnapshotMeta(snap) : {},
         );
         break;
       }
@@ -716,7 +731,7 @@ class OrchestratorImpl
 
   private async runBetweenTicketCleanup(config: Config): Promise<void> {
     const preSnap = getMemorySnapshot();
-    logger.info('Between-ticket cleanup: pre', { rssMb: preSnap.rssMb.toFixed(1) });
+    logger.info('Between-ticket cleanup: pre', formatSnapshotMeta(preSnap));
 
     const gcRan = tryGarbageCollect();
     if (gcRan) {
@@ -744,8 +759,8 @@ class OrchestratorImpl
 
     const postSnap = getMemorySnapshot();
     logger.info('Between-ticket cleanup: post', {
-      rssMb: postSnap.rssMb.toFixed(1),
-      deltaMb: (postSnap.rssMb - preSnap.rssMb).toFixed(1),
+      ...formatSnapshotMeta(postSnap),
+      deltaMb: +(postSnap.rssMb - preSnap.rssMb).toFixed(1),
     });
   }
 
