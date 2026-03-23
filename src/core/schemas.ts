@@ -296,10 +296,10 @@ export const ConfigSchema = z.object({
   rateLimitRetry: RateLimitRetrySchema.default({}),
   /** @deprecated Use memoryWarningMb instead. Maps to memoryWarningMb when set. */
   memoryCeilingMb: z.number().int().nonnegative().optional(),
-  /** Memory warning threshold in MB. When RSS exceeds this, queue pauses before next ticket. 0 = disabled (default: 4096). */
-  memoryWarningMb: z.number().int().nonnegative().default(4096),
-  /** Memory critical threshold in MB. When RSS exceeds this, current execution is aborted. 0 = disabled (default: 6144). */
-  memoryCriticalMb: z.number().int().nonnegative().default(6144),
+  /** Memory warning threshold in MB. When RSS exceeds this, queue pauses before next ticket. 0 = disabled (default: 6144). */
+  memoryWarningMb: z.number().int().nonnegative().default(6144),
+  /** Memory critical threshold in MB. When RSS exceeds this, current execution is aborted. 0 = disabled (default: 8192). */
+  memoryCriticalMb: z.number().int().nonnegative().default(8192),
   /** How often to check memory in seconds (default: 30) */
   memoryCheckIntervalSec: z.number().int().positive().default(30),
   /** Minimum free disk space in MB. When available space drops below this, queue pauses. 0 = disabled (default: 500). */
@@ -312,7 +312,7 @@ export const ConfigSchema = z.object({
   maxTotalTicketTime: DurationSchema.default("2h"),
 }).transform((val) => {
   // Map deprecated memoryCeilingMb to memoryWarningMb if warning was not explicitly provided
-  if (val.memoryCeilingMb !== undefined && val.memoryWarningMb === 4096) {
+  if (val.memoryCeilingMb !== undefined && val.memoryWarningMb === 6144) {
     return { ...val, memoryWarningMb: val.memoryCeilingMb };
   }
   return val;
