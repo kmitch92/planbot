@@ -404,6 +404,7 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
         cwd,
         verbose,
         maxHeapMb,
+        permissionMode: options.permissionMode,
       },
       callbacks,
     );
@@ -440,6 +441,7 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
         resume: true,
         verbose,
         maxHeapMb,
+        permissionMode: options.permissionMode,
       },
       callbacks,
     );
@@ -713,10 +715,11 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
       resume?: boolean;
       verbose?: boolean;
       maxHeapMb?: number;
+      permissionMode?: string;
     },
     callbacks: ExecutionCallbacks,
   ): Promise<ExecutionResult> {
-    const { model, sessionId, skipPermissions, timeout, cwd, resume, verbose, maxHeapMb } =
+    const { model, sessionId, skipPermissions, timeout, cwd, resume, verbose, maxHeapMb, permissionMode } =
       options;
 
     return new Promise((resolve) => {
@@ -742,6 +745,10 @@ class ClaudeWrapperImpl implements ClaudeWrapper {
 
       if (skipPermissions) {
         args.push("--dangerously-skip-permissions");
+      }
+
+      if (permissionMode) {
+        args.push("--permission-mode", permissionMode);
       }
 
       const env = this.buildEnv(maxHeapMb);
