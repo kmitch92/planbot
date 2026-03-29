@@ -28,6 +28,7 @@ import {
   createClearCommand,
 } from './commands/utility.js';
 import { createAttachCommand } from './commands/attach.js';
+import { createVerifyCommand } from './commands/verify.js';
 
 // =============================================================================
 // Program Setup
@@ -80,6 +81,7 @@ program.addCommand(createPlanCommand());
 program.addCommand(createServeCommand());
 program.addCommand(createResetCommand());
 program.addCommand(createClearCommand());
+program.addCommand(createVerifyCommand());
 
 // =============================================================================
 // Error Handling
