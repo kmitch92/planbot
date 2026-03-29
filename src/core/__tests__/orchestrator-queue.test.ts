@@ -80,6 +80,8 @@ vi.mock("../../utils/memory-monitor.js", () => ({
     timestamp: new Date().toISOString(),
   })),
   tryGarbageCollect: vi.fn().mockReturnValue(false),
+  formatSnapshotMeta: vi.fn(() => ({})),
+  getDiskSnapshot: vi.fn().mockResolvedValue({ availableMb: 10000 }),
 }));
 
 vi.mock("../../utils/logger.js", () => ({

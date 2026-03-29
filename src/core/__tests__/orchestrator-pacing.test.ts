@@ -91,6 +91,8 @@ vi.mock("../../utils/memory-monitor.js", () => ({
     usedPercent: 50,
   }),
   tryGarbageCollect: vi.fn().mockReturnValue(false),
+  formatSnapshotMeta: vi.fn(() => ({})),
+  getDiskSnapshot: vi.fn().mockResolvedValue({ availableMb: 10000 }),
 }));
 
 vi.mock("../../utils/logger.js", () => ({

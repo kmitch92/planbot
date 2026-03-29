@@ -77,6 +77,20 @@ vi.mock("../../utils/memory-monitor.js", () => ({
     timestamp: new Date().toISOString(),
   })),
   tryGarbageCollect: vi.fn().mockReturnValue(false),
+  formatSnapshotMeta: vi.fn((snapshot: Record<string, unknown>) => {
+    const s = snapshot as { rssMb: number; childRssMb: number; heapUsedMb: number; heapTotalMb: number; externalMb: number; systemAvailableMb: number; openFds: number };
+    return {
+      rssMb: s.rssMb?.toFixed(1),
+      childRssMb: s.childRssMb?.toFixed(1),
+      totalRssMb: ((s.rssMb ?? 0) + (s.childRssMb ?? 0)).toFixed(1),
+      heapUsedMb: s.heapUsedMb?.toFixed(1),
+      heapTotalMb: s.heapTotalMb?.toFixed(1),
+      externalMb: s.externalMb?.toFixed(1),
+      systemAvailableMb: s.systemAvailableMb?.toFixed(1),
+      openFds: s.openFds,
+    };
+  }),
+  getDiskSnapshot: vi.fn().mockResolvedValue({ availableMb: 10000 }),
 }));
 
 vi.mock("../../utils/logger.js", () => ({
