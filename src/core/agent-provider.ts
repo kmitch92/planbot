@@ -17,6 +17,8 @@ export interface AgentOptions {
   sessionId?: string;
   /** Skip permission prompts */
   skipPermissions?: boolean;
+  /** Permission mode for Claude CLI (e.g. "plan" for read-only) */
+  permissionMode?: string;
   /** Execution timeout in ms */
   timeout?: number;
   /** Working directory */
