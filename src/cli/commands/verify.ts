@@ -19,21 +19,96 @@ import { fileExists } from "../../utils/fs.js";
 interface VerifyOptions {
   ticket?: string;
   output?: string;
+  format?: "json" | "markdown";
   verbose?: boolean;
 }
 
-interface CriterionResult {
+export interface CriterionResult {
   index: number;
   text: string;
   status: "PASS" | "FAIL" | "SKIP";
   reason: string;
 }
 
-interface TicketVerification {
+export interface TicketVerification {
   ticketId: string;
   ticketTitle: string;
   criteria: CriterionResult[];
   result: "PASS" | "FAIL" | "PARTIAL" | "PENDING";
+}
+
+// =============================================================================
+// Format Resolution & Markdown Report
+// =============================================================================
+
+export function resolveFormat(
+  explicit: string | undefined,
+  outputPath: string,
+): "json" | "markdown" {
+  if (explicit === "markdown") return "markdown";
+  if (explicit === "json") return "json";
+  if (outputPath.endsWith(".md") || outputPath.endsWith(".markdown"))
+    return "markdown";
+  return "json";
+}
+
+function escapeCell(value: string): string {
+  return value.replace(/\|/g, "\\|").replace(/\n/g, " ");
+}
+
+export function generateMarkdownSummary(results: TicketVerification[]): string {
+  const lines: string[] = [];
+
+  const passedCount = results.filter((r) => r.result === "PASS").length;
+  const failedCount = results.length - passedCount;
+
+  lines.push("# Verification Report");
+  lines.push("");
+  lines.push(`**Date**: ${new Date().toISOString()}`);
+  lines.push("");
+  lines.push(
+    `**Tickets**: ${results.length} | **Passed**: ${passedCount} | **Failed**: ${failedCount}`,
+  );
+
+  if (results.length === 0) {
+    return lines.join("\n");
+  }
+
+  // Summary table
+  lines.push("");
+  lines.push("## Summary");
+  lines.push("");
+  lines.push("| Ticket | Title | Result | Criteria |");
+  lines.push("| --- | --- | --- | --- |");
+  for (const v of results) {
+    const critPassed = v.criteria.filter((c) => c.status === "PASS").length;
+    lines.push(
+      `| ${v.ticketId} | ${escapeCell(v.ticketTitle)} | ${v.result} | ${critPassed}/${v.criteria.length} |`,
+    );
+  }
+
+  // Details
+  lines.push("");
+  lines.push("## Details");
+  for (const v of results) {
+    const critPassed = v.criteria.filter((c) => c.status === "PASS").length;
+    lines.push("");
+    lines.push(`### ${v.ticketId}: ${v.ticketTitle}`);
+    lines.push("");
+    lines.push(
+      `**Result**: ${v.result} (${critPassed}/${v.criteria.length} criteria passed)`,
+    );
+    lines.push("");
+    lines.push("| # | Criterion | Status | Reason |");
+    lines.push("| --- | --- | --- | --- |");
+    for (const c of v.criteria) {
+      lines.push(
+        `| ${c.index} | ${escapeCell(c.text)} | ${c.status} | ${escapeCell(c.reason)} |`,
+      );
+    }
+  }
+
+  return lines.join("\n");
 }
 
 // =============================================================================
@@ -354,6 +429,7 @@ export function createVerifyCommand(): Command {
     )
     .option("--ticket <id>", "Verify a single ticket")
     .option("--output <path>", "Write JSON report to file")
+    .option("--format <type>", "Output format: json or markdown (auto-detects from extension)")
     .option("-v, --verbose", "Enable verbose logging")
     .action(async (ticketsFile: string, options: VerifyOptions) => {
       const cwd = process.cwd();
@@ -521,10 +597,15 @@ export function createVerifyCommand(): Command {
         // Display results
         displayResults(results);
 
-        // Write JSON report if requested
+        // Write report if requested
         if (options.output) {
           const reportPath = resolve(cwd, options.output);
-          await writeFile(reportPath, JSON.stringify(results, null, 2), "utf-8");
+          const format = resolveFormat(options.format, options.output);
+          const content =
+            format === "markdown"
+              ? generateMarkdownSummary(results)
+              : JSON.stringify(results, null, 2);
+          await writeFile(reportPath, content, "utf-8");
           console.log(chalk.dim(`Report written to ${reportPath}`));
         }
 
