@@ -38,8 +38,6 @@ hooks:
 
   afterAll:
     - type: prompt
-      command: /typetest
-    - type: prompt
       command: /commit
 
   beforeEach:
@@ -69,6 +67,10 @@ hooks:
   #
   # Required fields: id, title, description
   # Optional fields: priority, planMode, acceptanceCriteria, dependencies, hooks, metadata
+  #
+  # acceptanceCriteria:
+  #   List of criteria used by `planbot verify` to check ticket completion.
+  #   Tickets without acceptanceCriteria are skipped by the verify command.
   #
   # planMode (default: true):
   #   true  — generate a plan, wait for approval, then execute
