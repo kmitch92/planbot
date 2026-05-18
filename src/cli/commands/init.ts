@@ -21,7 +21,7 @@ tickets:
       Be specific about files, expected behavior, and constraints.
     priority: 1                    # Higher = more urgent (default: 0)
     planMode: false                # Skip plan generation, execute directly (default: true)
-    acceptanceCriteria:            # Completion criteria (optional)
+    acceptanceCriteria:            # Required for `planbot verify` (optional)
       - Criterion 1
       - Criterion 2
     # images:                      # Attached screenshots (optional)
@@ -179,6 +179,10 @@ hooks:
 # Required fields: id, title, description
 # Optional fields: priority, planMode, acceptanceCriteria, dependencies, hooks,
 #                  metadata, images, loop, cwd
+#
+# acceptanceCriteria:
+#   List of criteria used by \`planbot verify\` to check ticket completion.
+#   Tickets without acceptanceCriteria are skipped by the verify command.
 #
 # planMode (default: true):
 #   true  — generate a plan, wait for approval, then execute
