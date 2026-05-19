@@ -2,14 +2,38 @@ import { dirname, join } from 'node:path';
 
 import type { Ticket } from './schemas.js';
 import type {
-  AgentProvider,
   ExecutionCallbacks,
+  ExecutionResult,
   StreamEvent,
 } from './types/agent-provider.js';
 import type { PlanbotPaths } from './state.js';
 import { getDebriefPath } from './state.js';
 import { writeTextFile } from '../utils/fs.js';
 import { logger } from '../utils/logger.js';
+
+/**
+ * Minimum provider surface required by generateDebrief — just resume().
+ *
+ * Defined as a narrow structural type so it can accept any agent provider that
+ * supports session resumption, including both the canonical AgentProvider
+ * (./types/agent-provider.js) and the legacy AgentProvider
+ * (./agent-provider.js). Same pattern as VerificationProvider in verify.ts.
+ */
+export interface HandoverProvider {
+  resume(
+    sessionId: string,
+    input: string,
+    options: {
+      model?: string;
+      sessionId?: string;
+      skipPermissions?: boolean;
+      timeout?: number;
+      cwd?: string;
+      verbose?: boolean;
+    },
+    callbacks: ExecutionCallbacks,
+  ): Promise<ExecutionResult>;
+}
 
 // =============================================================================
 // buildDebriefPrompt
@@ -64,7 +88,7 @@ export function buildDebriefPrompt(ticket: Ticket): string {
 export interface GenerateDebriefOptions {
   ticket: Ticket;
   sessionId: string;
-  provider: AgentProvider;
+  provider: HandoverProvider;
   cwd: string;
   paths: PlanbotPaths;
   timeout: number;

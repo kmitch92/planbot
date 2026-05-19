@@ -19,6 +19,10 @@ import {
 } from "./schemas.js";
 import { resolveAndValidateImages, buildImagePromptSection } from "./images.js";
 import { stateManager } from "./state.js";
+import {
+  generateDebrief,
+  buildPriorWorkContext,
+} from "./handover.js";
 import { markTicketCompleteInFile } from "./tickets-io.js";
 import {
   claude,
@@ -175,6 +179,9 @@ class OrchestratorImpl
   private memoryMonitor: MemoryMonitor | null = null;
   private pendingApprovals = new Map<string, PendingApprovalResolvers>();
   private pendingQuestionAnswers = new Map<string, PendingQuestionResolvers>();
+
+  /** Ticket ids that successfully generated a debrief in the current run. */
+  private completedTicketIds: string[] = [];
 
   constructor(options: OrchestratorOptions) {
     super();
@@ -1121,6 +1128,7 @@ class OrchestratorImpl
 
       const directPrompt = this.buildDirectExecutionPrompt(
         ticket,
+        config,
         resolvedImagePaths,
         imageWarnings,
       );
@@ -1155,6 +1163,12 @@ class OrchestratorImpl
       ticket.status === "completed"
     ) {
       await this.runVerifyLoop(ticket, config, ticketCwd, verifyRetries);
+    }
+
+    // Handover: generate a debrief if enabled and the ticket completed
+    const handoverEnabled = ticket.handoverEnabled ?? config.handoverEnabled;
+    if (handoverEnabled && ticket.status === "completed") {
+      await this.runHandover(ticket, config, ticketCwd);
     }
 
     // Execute afterEach hooks
@@ -1335,6 +1349,79 @@ class OrchestratorImpl
     }
   }
 
+  private async runHandover(
+    ticket: Ticket,
+    config: Config,
+    ticketCwd: string,
+  ): Promise<void> {
+    const sessionId = await stateManager.loadSession(
+      this.projectRoot,
+      ticket.id,
+    );
+    if (!sessionId) {
+      logger.warn("handover:no-session", {
+        ticketId: ticket.id,
+        message: "Cannot generate debrief — no session id",
+      });
+      return;
+    }
+
+    const paths = stateManager.getPaths(this.projectRoot);
+
+    logger.info("handover:start", {
+      ticketId: ticket.id,
+      sessionId,
+    });
+    this.multiplexer
+      .broadcastStatus({
+        ticketId: ticket.id,
+        ticketTitle: ticket.title,
+        status: "started",
+        message: "Generating handover debrief",
+      })
+      .catch(() => {});
+
+    const result = await generateDebrief({
+      ticket,
+      sessionId,
+      provider: this.agent,
+      cwd: ticketCwd,
+      paths,
+      timeout: config.timeouts.execution,
+      verbose: this.verbose,
+    });
+
+    if (result.success) {
+      this.completedTicketIds.push(ticket.id);
+      logger.info("handover:written", {
+        ticketId: ticket.id,
+        path: result.path,
+        bytesWritten: result.bytesWritten,
+      });
+      this.multiplexer
+        .broadcastStatus({
+          ticketId: ticket.id,
+          ticketTitle: ticket.title,
+          status: "completed",
+          message: `Debrief saved: ${result.path}`,
+        })
+        .catch(() => {});
+    } else {
+      logger.warn("handover:error", {
+        ticketId: ticket.id,
+        error: result.error,
+      });
+      this.multiplexer
+        .broadcastStatus({
+          ticketId: ticket.id,
+          ticketTitle: ticket.title,
+          status: "completed",
+          message: `Debrief failed (ticket succeeded) — ${result.error ?? "unknown error"}`,
+        })
+        .catch(() => {});
+    }
+  }
+
   private formatVerifyFailureFeedback(
     v: TicketVerification | undefined,
   ): string {
@@ -1367,6 +1454,7 @@ class OrchestratorImpl
 
     const prompt = this.buildPlanPrompt(
       ticket,
+      config,
       feedback,
       resolvedImagePaths,
       imageWarnings,
@@ -1569,6 +1657,7 @@ class OrchestratorImpl
     const prompt = this.buildExecutionPrompt(
       ticket,
       plan,
+      config,
       resolvedImagePaths,
       imageWarnings,
     );
@@ -2687,8 +2776,53 @@ class OrchestratorImpl
     return `plan-${ticketId}-${randomBytes(4).toString("hex")}`;
   }
 
+  /**
+   * Compute the 1-based queue position and total count for a ticket. Returns
+   * undefined index when the ticket is not present in the loaded queue (e.g.
+   * dynamic tickets) so callers can omit prior-work context cleanly.
+   */
+  private getTicketPosition(ticket: Ticket): {
+    currentIndex: number | undefined;
+    totalTickets: number;
+  } {
+    const tickets = this.ticketsFile?.tickets ?? [];
+    const idx = tickets.findIndex((t) => t.id === ticket.id);
+    return {
+      currentIndex: idx >= 0 ? idx + 1 : undefined,
+      totalTickets: tickets.length,
+    };
+  }
+
+  /**
+   * Build the optional "Prior work context" block to prepend to prompts when
+   * handover is enabled and prior tickets have produced debriefs.
+   */
+  private maybeBuildPriorWorkBlock(
+    ticket: Ticket,
+    config: Config,
+  ): string | null {
+    const handoverEnabled = ticket.handoverEnabled ?? config.handoverEnabled;
+    if (!handoverEnabled) return null;
+    if (this.completedTicketIds.length === 0) return null;
+
+    const { currentIndex, totalTickets } = this.getTicketPosition(ticket);
+    if (currentIndex === undefined) return null;
+
+    const paths = stateManager.getPaths(this.projectRoot);
+    const block = buildPriorWorkContext({
+      completedTicketIds: this.completedTicketIds,
+      paths,
+      ticketsFilePath: this.ticketsFilePath,
+      currentTicketIndex: currentIndex,
+      totalTickets,
+      maxListed: 5,
+    });
+    return block.length > 0 ? block : null;
+  }
+
   private buildPlanPrompt(
     ticket: Ticket,
+    config: Config,
     feedback?: string,
     resolvedImagePaths: string[] = [],
     imageWarnings: string[] = [],
@@ -2705,6 +2839,11 @@ class OrchestratorImpl
       for (const criterion of ticket.acceptanceCriteria) {
         parts.push(`- ${criterion}`);
       }
+    }
+
+    const priorWork = this.maybeBuildPriorWorkBlock(ticket, config);
+    if (priorWork) {
+      parts.push("", priorWork);
     }
 
     const imageSection = buildImagePromptSection(
@@ -2737,9 +2876,15 @@ class OrchestratorImpl
 
   private buildDirectExecutionPrompt(
     ticket: Ticket,
+    _config: Config,
     resolvedImagePaths: string[] = [],
     imageWarnings: string[] = [],
   ): string {
+    // Note: prior-work context is intentionally NOT injected here. This prompt
+    // is wrapped as the "plan" body inside buildExecutionPrompt, which is the
+    // single canonical injection site for execution-time prior-work context.
+    // Injecting here would produce duplicated pointer blocks in the final
+    // execution prompt.
     const parts = [
       `# Task: ${ticket.title}`,
       "",
@@ -2768,6 +2913,7 @@ class OrchestratorImpl
   private buildExecutionPrompt(
     ticket: Ticket,
     plan: string,
+    config: Config,
     resolvedImagePaths: string[] = [],
     imageWarnings: string[] = [],
   ): string {
@@ -2788,6 +2934,11 @@ class OrchestratorImpl
       for (const criterion of ticket.acceptanceCriteria) {
         parts.push(`- [ ] ${criterion}`);
       }
+    }
+
+    const priorWork = this.maybeBuildPriorWorkBlock(ticket, config);
+    if (priorWork) {
+      parts.push("", priorWork);
     }
 
     const imageSection = buildImagePromptSection(
