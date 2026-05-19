@@ -21,7 +21,7 @@ tickets:
       Be specific about files, expected behavior, and constraints.
     priority: 1                    # Higher = more urgent (default: 0)
     planMode: false                # Skip plan generation, execute directly (default: true)
-    acceptanceCriteria:            # Required for `planbot verify` (optional)
+    acceptanceCriteria:            # Required for \`planbot verify\` (optional)
       - Criterion 1
       - Criterion 2
     # images:                      # Attached screenshots (optional)
