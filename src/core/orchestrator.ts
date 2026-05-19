@@ -48,6 +48,11 @@ import {
 import { processRegistry } from "../utils/process-lifecycle.js";
 import { interruptibleDelay } from "../utils/interruptible-delay.js";
 import { formatDuration } from "../utils/duration.js";
+import {
+  runVerification,
+  type TicketVerification,
+  type CriterionResult,
+} from "../cli/commands/verify.js";
 
 // =============================================================================
 // Types and Interfaces
@@ -1142,6 +1147,16 @@ class OrchestratorImpl
       }
     }
 
+    // Verify-loop: re-check acceptance criteria post-execution
+    const verifyRetries = ticket.verifyRetries ?? config.verifyRetries;
+    if (
+      verifyRetries > 0 &&
+      ticket.acceptanceCriteria?.length &&
+      ticket.status === "completed"
+    ) {
+      await this.runVerifyLoop(ticket, config, ticketCwd, verifyRetries);
+    }
+
     // Execute afterEach hooks
     await this.executeHooks(mergedHooks, "afterEach", {
       ticketId: ticket.id,
@@ -1151,6 +1166,193 @@ class OrchestratorImpl
     });
 
     logger.clearContext();
+  }
+
+  private async runVerifyLoop(
+    ticket: Ticket,
+    config: Config,
+    ticketCwd: string,
+    verifyRetries: number,
+  ): Promise<void> {
+    const totalAttempts = verifyRetries + 1; // first run + N retries
+
+    // Get session ID from state (set by executeTicket)
+    let sessionId: string | null = await stateManager.loadSession(
+      this.projectRoot,
+      ticket.id,
+    );
+
+    logger.info("verify:start", {
+      ticketId: ticket.id,
+      totalAttempts,
+      criteriaCount: ticket.acceptanceCriteria?.length ?? 0,
+    });
+    this.multiplexer
+      .broadcastStatus({
+        ticketId: ticket.id,
+        ticketTitle: ticket.title,
+        status: "started",
+        message: `Verifying acceptance criteria (up to ${totalAttempts} attempts)`,
+      })
+      .catch((err) =>
+        logger.warn("Failed to broadcast verify status", {
+          error: String(err),
+        }),
+      );
+
+    for (let attempt = 1; attempt <= totalAttempts; attempt++) {
+      logger.info("verify:invoke", {
+        ticketId: ticket.id,
+        attempt,
+        totalAttempts,
+      });
+
+      const { results, success } = await runVerification({
+        tickets: [ticket],
+        provider: this.agent,
+        cwd: ticketCwd,
+        interactive: false,
+        timeout: config.timeouts.execution,
+        verbose: this.verbose,
+      });
+
+      const v = results[0];
+      const passedCount =
+        v?.criteria.filter((c) => c.status === "PASS").length ?? 0;
+      const totalCount = v?.criteria.length ?? 0;
+
+      logger.info("verify:result", {
+        ticketId: ticket.id,
+        attempt,
+        result: v?.result ?? "PENDING",
+        passedCount,
+        totalCount,
+        success,
+      });
+
+      if (v) {
+        for (const c of v.criteria) {
+          if (c.status !== "PASS") {
+            logger.info("verify:criterion-fail", {
+              ticketId: ticket.id,
+              criterionIndex: c.index,
+              criterionText: c.text,
+              status: c.status,
+              reason: c.reason,
+            });
+          }
+        }
+      }
+
+      if (v?.result === "PASS") {
+        logger.info("verify:pass", {
+          ticketId: ticket.id,
+          attempts: attempt,
+        });
+        this.multiplexer
+          .broadcastStatus({
+            ticketId: ticket.id,
+            ticketTitle: ticket.title,
+            status: "completed",
+            message: `Verified after ${attempt} attempt(s)`,
+          })
+          .catch(() => {});
+        return;
+      }
+
+      // Not passed
+      if (attempt >= totalAttempts) {
+        logger.warn("verify:exhausted", {
+          ticketId: ticket.id,
+          totalAttempts,
+          result: v?.result ?? "FAIL",
+        });
+        ticket.status = "failed";
+        await this.saveTicketsFile();
+        this.multiplexer
+          .broadcastStatus({
+            ticketId: ticket.id,
+            ticketTitle: ticket.title,
+            status: "failed",
+            message: `Verification failed after ${totalAttempts} attempts`,
+          })
+          .catch(() => {});
+        return;
+      }
+
+      // Retry: resume session with feedback
+      if (!sessionId) {
+        logger.warn("verify:no-session", {
+          ticketId: ticket.id,
+          message: "Cannot resume — no session id available",
+        });
+        ticket.status = "failed";
+        await this.saveTicketsFile();
+        return;
+      }
+
+      const feedback = this.formatVerifyFailureFeedback(v);
+      logger.info("verify:retry", {
+        ticketId: ticket.id,
+        attempt,
+        feedbackLength: feedback.length,
+      });
+      this.multiplexer
+        .broadcastStatus({
+          ticketId: ticket.id,
+          ticketTitle: ticket.title,
+          status: "started",
+          message: `Verification failed (${passedCount}/${totalCount}) — re-running with feedback`,
+        })
+        .catch(() => {});
+
+      try {
+        const resumeResult = await this.agent.resume(
+          sessionId,
+          feedback,
+          {
+            cwd: ticketCwd,
+            timeout: config.timeouts.execution,
+            verbose: this.verbose,
+          },
+          {
+            onEvent: () => {},
+            onQuestion: async () => "",
+            onOutput: () => {},
+          },
+        );
+        if (resumeResult.sessionId) sessionId = resumeResult.sessionId;
+      } catch (err) {
+        logger.error("verify:resume-error", {
+          ticketId: ticket.id,
+          attempt,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        ticket.status = "failed";
+        await this.saveTicketsFile();
+        return;
+      }
+    }
+  }
+
+  private formatVerifyFailureFeedback(
+    v: TicketVerification | undefined,
+  ): string {
+    if (!v) return "Verification failed: no results available.";
+    const lines: string[] = [
+      "Verification of acceptance criteria failed. The following criteria did not pass — please address each before completing:",
+      "",
+    ];
+    for (const c of v.criteria) {
+      if (c.status === "PASS") continue;
+      lines.push(`- [${c.status}] Criterion ${c.index}: ${c.text}`);
+      if (c.reason) lines.push(`  Reason: ${c.reason}`);
+    }
+    lines.push(
+      "",
+      "Continue from where you left off and resolve each failing criterion. Then stop — the harness will re-verify.",
+    );
+    return lines.join("\n");
   }
 
   private async generatePlan(

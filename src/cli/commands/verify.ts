@@ -9,8 +9,8 @@ import { parseTicketsFile } from "../../core/schemas.js";
 import type { Ticket } from "../../core/schemas.js";
 import { claude } from "../../core/claude.js";
 import type {
-  AgentProvider,
   ExecutionCallbacks,
+  ExecutionResult,
 } from "../../core/types/agent-provider.js";
 import { createMultiplexer } from "../../messaging/index.js";
 import { createTerminalProvider } from "../../messaging/terminal.js";
@@ -398,9 +398,25 @@ After all tickets are processed, emit:
 // Programmatic Entry Point
 // =============================================================================
 
+/** Minimum provider surface required by runVerification — just execute(). */
+export interface VerificationProvider {
+  execute(
+    prompt: string,
+    options: {
+      model?: string;
+      sessionId?: string;
+      skipPermissions?: boolean;
+      timeout?: number;
+      cwd?: string;
+      verbose?: boolean;
+    },
+    callbacks: ExecutionCallbacks,
+  ): Promise<ExecutionResult>;
+}
+
 export interface RunVerificationOptions {
   tickets: Ticket[];
-  provider: AgentProvider;
+  provider: VerificationProvider;
   cwd: string;
   interactive?: boolean;
   verbose?: boolean;
