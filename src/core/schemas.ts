@@ -266,6 +266,10 @@ export const ConfigSchema = z.object({
   maxRetries: z.number().int().nonnegative().default(3),
   /** Maximum number of plan revision attempts after rejection with feedback (0 = no revisions) */
   maxPlanRevisions: z.number().int().nonnegative().default(3),
+  /** Maximum number of verify retries after a ticket completes (0 = no verify retries) */
+  verifyRetries: z.number().int().nonnegative().default(0),
+  /** Whether handover (session continuation) is enabled (default: false) */
+  handoverEnabled: z.boolean().default(false),
   /** Continue processing queue if a ticket fails */
   continueOnError: z.boolean().default(false),
   /** Automatically approve plans without human review */
@@ -406,6 +410,10 @@ export const TicketSchema = z.object({
   loop: LoopConfigSchema.optional(),
   /** Per-ticket pacing overrides (merges with global config.pacing) */
   pacing: PacingSchema.partial().optional(),
+  /** Per-ticket override for verify retries (overrides config.verifyRetries) */
+  verifyRetries: z.number().int().nonnegative().optional(),
+  /** Per-ticket override for handover enablement (overrides config.handoverEnabled) */
+  handoverEnabled: z.boolean().optional(),
   /** Whether the ticket has been completed (persisted to YAML for restart resilience) */
   complete: z.boolean().default(false),
 });
