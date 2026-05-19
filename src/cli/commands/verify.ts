@@ -8,6 +8,10 @@ import { parse as parseYaml } from "yaml";
 import { parseTicketsFile } from "../../core/schemas.js";
 import type { Ticket } from "../../core/schemas.js";
 import { claude } from "../../core/claude.js";
+import type {
+  ExecutionCallbacks,
+  ExecutionResult,
+} from "../../core/types/agent-provider.js";
 import { createMultiplexer } from "../../messaging/index.js";
 import { createTerminalProvider } from "../../messaging/terminal.js";
 import { fileExists } from "../../utils/fs.js";
@@ -290,7 +294,11 @@ function normalizeResult(raw: string): "PASS" | "FAIL" | "PARTIAL" | "PENDING" {
 // Prompt Builder
 // =============================================================================
 
-export function buildVerifyPrompt(tickets: Ticket[]): string {
+export function buildVerifyPrompt(
+  tickets: Ticket[],
+  options?: { interactive?: boolean },
+): string {
+  const interactive = options?.interactive ?? true;
   const sections: string[] = [];
 
   // Role
@@ -321,7 +329,8 @@ Token formats:
 - Emit each token on its own line with no leading whitespace.`);
 
   // Workflow
-  sections.push(`## Workflow
+  if (interactive) {
+    sections.push(`## Workflow
 
 Process tickets in the order given below. For each ticket:
 
@@ -340,6 +349,23 @@ Process tickets in the order given below. For each ticket:
 
 After all tickets are processed, emit:
 \`[VERIFY_COMPLETE summary="<passed>/<total> passed"]\``);
+  } else {
+    sections.push(`## Workflow
+
+Process tickets in the order given below. For each ticket:
+
+1. Emit \`[VERIFY_START ticketId="<id>"]\`
+2. Read relevant source code, tests, and configuration files to evaluate each acceptance criterion.
+3. For each criterion (0-indexed), emit:
+   \`[CRITERION index=<n> status="PASS|FAIL|SKIP" reason="<brief explanation>"]\`
+4. Emit \`[VERIFY_END ticketId="<id>" result="PASS|FAIL|PARTIAL"]\` based purely on your own assessment:
+   - "PASS" if all criteria pass
+   - "FAIL" if any criterion fails
+   - "PARTIAL" if some pass and some fail
+
+After all tickets are processed, emit:
+\`[VERIFY_COMPLETE summary="<passed>/<total> passed"]\``);
+  }
 
   // Constraints
   sections.push(`## Constraints
@@ -366,6 +392,106 @@ After all tickets are processed, emit:
   sections.push(ticketLines.join("\n"));
 
   return sections.join("\n\n");
+}
+
+// =============================================================================
+// Programmatic Entry Point
+// =============================================================================
+
+/** Minimum provider surface required by runVerification — just execute(). */
+export interface VerificationProvider {
+  execute(
+    prompt: string,
+    options: {
+      model?: string;
+      sessionId?: string;
+      skipPermissions?: boolean;
+      timeout?: number;
+      cwd?: string;
+      verbose?: boolean;
+    },
+    callbacks: ExecutionCallbacks,
+  ): Promise<ExecutionResult>;
+}
+
+export interface RunVerificationOptions {
+  tickets: Ticket[];
+  provider: VerificationProvider;
+  cwd: string;
+  interactive?: boolean;
+  verbose?: boolean;
+  timeout?: number;
+}
+
+export interface RunVerificationResult {
+  results: TicketVerification[];
+  success: boolean;
+}
+
+export async function runVerification(
+  opts: RunVerificationOptions,
+): Promise<RunVerificationResult> {
+  const interactive = opts.interactive ?? false;
+
+  // Filter to verifiable tickets
+  const verifiable = opts.tickets.filter(
+    (t) => t.acceptanceCriteria && t.acceptanceCriteria.length > 0,
+  );
+
+  if (verifiable.length === 0) {
+    return { results: [], success: true };
+  }
+
+  const prompt = buildVerifyPrompt(verifiable, { interactive });
+  const tracker = new VerificationTracker();
+
+  const titleMap = new Map<string, Ticket>();
+  for (const t of verifiable) {
+    titleMap.set(t.id, t);
+  }
+
+  const callbacks: ExecutionCallbacks = {
+    onEvent: (event) => {
+      if (event.type === "assistant" && event.message) {
+        tracker.handleAssistantText(event.message);
+      }
+    },
+    onQuestion: async () => "",
+    onOutput: () => {},
+  };
+
+  const executeResult = await opts.provider.execute(
+    prompt,
+    {
+      cwd: opts.cwd,
+      timeout: opts.timeout,
+      verbose: opts.verbose,
+      skipPermissions: false,
+    },
+    callbacks,
+  );
+
+  tracker.flush();
+
+  // Enrich results from ticket source data
+  const results = tracker.getResults();
+  for (const v of results) {
+    const ticket = titleMap.get(v.ticketId);
+    if (ticket) {
+      v.ticketTitle = ticket.title;
+      for (const c of v.criteria) {
+        if (
+          !c.text &&
+          ticket.acceptanceCriteria &&
+          c.index < ticket.acceptanceCriteria.length
+        ) {
+          c.text = ticket.acceptanceCriteria[c.index]!;
+        }
+      }
+    }
+  }
+
+  return { results, success: executeResult.success };
 }
 
 // =============================================================================

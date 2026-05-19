@@ -38,6 +38,8 @@ export interface PlanbotPaths {
   assets: string;
   /** .planbot/logs/ */
   logs: string;
+  /** .planbot/debriefs/ */
+  debriefs: string;
   /** .planbot/planbot.pid */
   pid: string;
 }
@@ -55,6 +57,7 @@ function getPaths(projectRoot: string): PlanbotPaths {
     sessions: join(root, 'sessions'),
     assets: join(root, 'assets'),
     logs: join(root, 'logs'),
+    debriefs: join(root, 'debriefs'),
     pid: join(root, 'planbot.pid'),
   };
 }
@@ -149,6 +152,7 @@ function createStateManager(): StateManager {
       await ensureDir(paths.sessions);
       await ensureDir(paths.assets);
       await ensureDir(paths.logs);
+      await ensureDir(paths.debriefs);
 
       // Create default state if it doesn't exist
       if (!(await fileExists(paths.state))) {
@@ -388,3 +392,17 @@ function createStateManager(): StateManager {
  * Default StateManager instance
  */
 export const stateManager: StateManager = createStateManager();
+
+/**
+ * Get the path to a debrief file for a ticket.
+ *
+ * @param projectRoot - The project root directory
+ * @param ticketId - The ticket ID (validated against path traversal)
+ * @returns Absolute path to .planbot/debriefs/<ticketId>.md
+ * @throws Error if ticket ID contains invalid characters or path traversal patterns
+ */
+export function getDebriefPath(projectRoot: string, ticketId: string): string {
+  validateTicketId(ticketId);
+  const paths = getPaths(projectRoot);
+  return join(paths.debriefs, `${ticketId}.md`);
+}

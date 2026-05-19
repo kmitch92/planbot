@@ -19,6 +19,10 @@ import {
 } from "./schemas.js";
 import { resolveAndValidateImages, buildImagePromptSection } from "./images.js";
 import { stateManager } from "./state.js";
+import {
+  generateDebrief,
+  buildPriorWorkContext,
+} from "./handover.js";
 import { markTicketCompleteInFile } from "./tickets-io.js";
 import {
   claude,
@@ -48,6 +52,11 @@ import {
 import { processRegistry } from "../utils/process-lifecycle.js";
 import { interruptibleDelay } from "../utils/interruptible-delay.js";
 import { formatDuration } from "../utils/duration.js";
+import {
+  runVerification,
+  type TicketVerification,
+  type CriterionResult,
+} from "../cli/commands/verify.js";
 
 // =============================================================================
 // Types and Interfaces
@@ -170,6 +179,9 @@ class OrchestratorImpl
   private memoryMonitor: MemoryMonitor | null = null;
   private pendingApprovals = new Map<string, PendingApprovalResolvers>();
   private pendingQuestionAnswers = new Map<string, PendingQuestionResolvers>();
+
+  /** Ticket ids that successfully generated a debrief in the current run. */
+  private completedTicketIds: string[] = [];
 
   constructor(options: OrchestratorOptions) {
     super();
@@ -1116,6 +1128,7 @@ class OrchestratorImpl
 
       const directPrompt = this.buildDirectExecutionPrompt(
         ticket,
+        config,
         resolvedImagePaths,
         imageWarnings,
       );
@@ -1142,6 +1155,22 @@ class OrchestratorImpl
       }
     }
 
+    // Verify-loop: re-check acceptance criteria post-execution
+    const verifyRetries = ticket.verifyRetries ?? config.verifyRetries;
+    if (
+      verifyRetries > 0 &&
+      ticket.acceptanceCriteria?.length &&
+      ticket.status === "completed"
+    ) {
+      await this.runVerifyLoop(ticket, config, ticketCwd, verifyRetries);
+    }
+
+    // Handover: generate a debrief if enabled and the ticket completed
+    const handoverEnabled = ticket.handoverEnabled ?? config.handoverEnabled;
+    if (handoverEnabled && ticket.status === "completed") {
+      await this.runHandover(ticket, config, ticketCwd);
+    }
+
     // Execute afterEach hooks
     await this.executeHooks(mergedHooks, "afterEach", {
       ticketId: ticket.id,
@@ -1151,6 +1180,266 @@ class OrchestratorImpl
     });
 
     logger.clearContext();
+  }
+
+  private async runVerifyLoop(
+    ticket: Ticket,
+    config: Config,
+    ticketCwd: string,
+    verifyRetries: number,
+  ): Promise<void> {
+    const totalAttempts = verifyRetries + 1; // first run + N retries
+
+    // Get session ID from state (set by executeTicket)
+    let sessionId: string | null = await stateManager.loadSession(
+      this.projectRoot,
+      ticket.id,
+    );
+
+    logger.info("verify:start", {
+      ticketId: ticket.id,
+      totalAttempts,
+      criteriaCount: ticket.acceptanceCriteria?.length ?? 0,
+    });
+    this.multiplexer
+      .broadcastStatus({
+        ticketId: ticket.id,
+        ticketTitle: ticket.title,
+        status: "started",
+        message: `Verifying acceptance criteria (up to ${totalAttempts} attempts)`,
+      })
+      .catch((err) =>
+        logger.warn("Failed to broadcast verify status", {
+          error: String(err),
+        }),
+      );
+
+    for (let attempt = 1; attempt <= totalAttempts; attempt++) {
+      logger.info("verify:invoke", {
+        ticketId: ticket.id,
+        attempt,
+        totalAttempts,
+      });
+
+      const { results, success } = await runVerification({
+        tickets: [ticket],
+        provider: this.agent,
+        cwd: ticketCwd,
+        interactive: false,
+        timeout: config.timeouts.execution,
+        verbose: this.verbose,
+      });
+
+      const v = results[0];
+      const passedCount =
+        v?.criteria.filter((c) => c.status === "PASS").length ?? 0;
+      const totalCount = v?.criteria.length ?? 0;
+
+      logger.info("verify:result", {
+        ticketId: ticket.id,
+        attempt,
+        result: v?.result ?? "PENDING",
+        passedCount,
+        totalCount,
+        success,
+      });
+
+      if (v) {
+        for (const c of v.criteria) {
+          if (c.status !== "PASS") {
+            logger.info("verify:criterion-fail", {
+              ticketId: ticket.id,
+              criterionIndex: c.index,
+              criterionText: c.text,
+              status: c.status,
+              reason: c.reason,
+            });
+          }
+        }
+      }
+
+      if (v?.result === "PASS") {
+        logger.info("verify:pass", {
+          ticketId: ticket.id,
+          attempts: attempt,
+        });
+        this.multiplexer
+          .broadcastStatus({
+            ticketId: ticket.id,
+            ticketTitle: ticket.title,
+            status: "completed",
+            message: `Verified after ${attempt} attempt(s)`,
+          })
+          .catch(() => {});
+        return;
+      }
+
+      // Not passed
+      if (attempt >= totalAttempts) {
+        logger.warn("verify:exhausted", {
+          ticketId: ticket.id,
+          totalAttempts,
+          result: v?.result ?? "FAIL",
+        });
+        ticket.status = "failed";
+        await this.saveTicketsFile();
+        this.multiplexer
+          .broadcastStatus({
+            ticketId: ticket.id,
+            ticketTitle: ticket.title,
+            status: "failed",
+            message: `Verification failed after ${totalAttempts} attempts`,
+          })
+          .catch(() => {});
+        return;
+      }
+
+      // Retry: resume session with feedback
+      if (!sessionId) {
+        logger.warn("verify:no-session", {
+          ticketId: ticket.id,
+          message: "Cannot resume — no session id available",
+        });
+        ticket.status = "failed";
+        await this.saveTicketsFile();
+        return;
+      }
+
+      const feedback = this.formatVerifyFailureFeedback(v);
+      logger.info("verify:retry", {
+        ticketId: ticket.id,
+        attempt,
+        feedbackLength: feedback.length,
+      });
+      this.multiplexer
+        .broadcastStatus({
+          ticketId: ticket.id,
+          ticketTitle: ticket.title,
+          status: "started",
+          message: `Verification failed (${passedCount}/${totalCount}) — re-running with feedback`,
+        })
+        .catch(() => {});
+
+      try {
+        const resumeResult = await this.agent.resume(
+          sessionId,
+          feedback,
+          {
+            cwd: ticketCwd,
+            timeout: config.timeouts.execution,
+            verbose: this.verbose,
+          },
+          {
+            onEvent: () => {},
+            onQuestion: async () => "",
+            onOutput: () => {},
+          },
+        );
+        if (resumeResult.sessionId) sessionId = resumeResult.sessionId;
+      } catch (err) {
+        logger.error("verify:resume-error", {
+          ticketId: ticket.id,
+          attempt,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        ticket.status = "failed";
+        await this.saveTicketsFile();
+        return;
+      }
+    }
+  }
+
+  private async runHandover(
+    ticket: Ticket,
+    config: Config,
+    ticketCwd: string,
+  ): Promise<void> {
+    const sessionId = await stateManager.loadSession(
+      this.projectRoot,
+      ticket.id,
+    );
+    if (!sessionId) {
+      logger.warn("handover:no-session", {
+        ticketId: ticket.id,
+        message: "Cannot generate debrief — no session id",
+      });
+      return;
+    }
+
+    const paths = stateManager.getPaths(this.projectRoot);
+
+    logger.info("handover:start", {
+      ticketId: ticket.id,
+      sessionId,
+    });
+    this.multiplexer
+      .broadcastStatus({
+        ticketId: ticket.id,
+        ticketTitle: ticket.title,
+        status: "started",
+        message: "Generating handover debrief",
+      })
+      .catch(() => {});
+
+    const result = await generateDebrief({
+      ticket,
+      sessionId,
+      provider: this.agent,
+      cwd: ticketCwd,
+      paths,
+      timeout: config.timeouts.execution,
+      verbose: this.verbose,
+    });
+
+    if (result.success) {
+      this.completedTicketIds.push(ticket.id);
+      logger.info("handover:written", {
+        ticketId: ticket.id,
+        path: result.path,
+        bytesWritten: result.bytesWritten,
+      });
+      this.multiplexer
+        .broadcastStatus({
+          ticketId: ticket.id,
+          ticketTitle: ticket.title,
+          status: "completed",
+          message: `Debrief saved: ${result.path}`,
+        })
+        .catch(() => {});
+    } else {
+      logger.warn("handover:error", {
+        ticketId: ticket.id,
+        error: result.error,
+      });
+      this.multiplexer
+        .broadcastStatus({
+          ticketId: ticket.id,
+          ticketTitle: ticket.title,
+          status: "completed",
+          message: `Debrief failed (ticket succeeded) — ${result.error ?? "unknown error"}`,
+        })
+        .catch(() => {});
+    }
+  }
+
+  private formatVerifyFailureFeedback(
+    v: TicketVerification | undefined,
+  ): string {
+    if (!v) return "Verification failed: no results available.";
+    const lines: string[] = [
+      "Verification of acceptance criteria failed. The following criteria did not pass — please address each before completing:",
+      "",
+    ];
+    for (const c of v.criteria) {
+      if (c.status === "PASS") continue;
+      lines.push(`- [${c.status}] Criterion ${c.index}: ${c.text}`);
+      if (c.reason) lines.push(`  Reason: ${c.reason}`);
+    }
+    lines.push(
+      "",
+      "Continue from where you left off and resolve each failing criterion. Then stop — the harness will re-verify.",
+    );
+    return lines.join("\n");
   }
 
   private async generatePlan(
@@ -1165,6 +1454,7 @@ class OrchestratorImpl
 
     const prompt = this.buildPlanPrompt(
       ticket,
+      config,
       feedback,
       resolvedImagePaths,
       imageWarnings,
@@ -1367,6 +1657,7 @@ class OrchestratorImpl
     const prompt = this.buildExecutionPrompt(
       ticket,
       plan,
+      config,
       resolvedImagePaths,
       imageWarnings,
     );
@@ -2485,8 +2776,53 @@ class OrchestratorImpl
     return `plan-${ticketId}-${randomBytes(4).toString("hex")}`;
   }
 
+  /**
+   * Compute the 1-based queue position and total count for a ticket. Returns
+   * undefined index when the ticket is not present in the loaded queue (e.g.
+   * dynamic tickets) so callers can omit prior-work context cleanly.
+   */
+  private getTicketPosition(ticket: Ticket): {
+    currentIndex: number | undefined;
+    totalTickets: number;
+  } {
+    const tickets = this.ticketsFile?.tickets ?? [];
+    const idx = tickets.findIndex((t) => t.id === ticket.id);
+    return {
+      currentIndex: idx >= 0 ? idx + 1 : undefined,
+      totalTickets: tickets.length,
+    };
+  }
+
+  /**
+   * Build the optional "Prior work context" block to prepend to prompts when
+   * handover is enabled and prior tickets have produced debriefs.
+   */
+  private maybeBuildPriorWorkBlock(
+    ticket: Ticket,
+    config: Config,
+  ): string | null {
+    const handoverEnabled = ticket.handoverEnabled ?? config.handoverEnabled;
+    if (!handoverEnabled) return null;
+    if (this.completedTicketIds.length === 0) return null;
+
+    const { currentIndex, totalTickets } = this.getTicketPosition(ticket);
+    if (currentIndex === undefined) return null;
+
+    const paths = stateManager.getPaths(this.projectRoot);
+    const block = buildPriorWorkContext({
+      completedTicketIds: this.completedTicketIds,
+      paths,
+      ticketsFilePath: this.ticketsFilePath,
+      currentTicketIndex: currentIndex,
+      totalTickets,
+      maxListed: 5,
+    });
+    return block.length > 0 ? block : null;
+  }
+
   private buildPlanPrompt(
     ticket: Ticket,
+    config: Config,
     feedback?: string,
     resolvedImagePaths: string[] = [],
     imageWarnings: string[] = [],
@@ -2503,6 +2839,11 @@ class OrchestratorImpl
       for (const criterion of ticket.acceptanceCriteria) {
         parts.push(`- ${criterion}`);
       }
+    }
+
+    const priorWork = this.maybeBuildPriorWorkBlock(ticket, config);
+    if (priorWork) {
+      parts.push("", priorWork);
     }
 
     const imageSection = buildImagePromptSection(
@@ -2535,9 +2876,15 @@ class OrchestratorImpl
 
   private buildDirectExecutionPrompt(
     ticket: Ticket,
+    _config: Config,
     resolvedImagePaths: string[] = [],
     imageWarnings: string[] = [],
   ): string {
+    // Note: prior-work context is intentionally NOT injected here. This prompt
+    // is wrapped as the "plan" body inside buildExecutionPrompt, which is the
+    // single canonical injection site for execution-time prior-work context.
+    // Injecting here would produce duplicated pointer blocks in the final
+    // execution prompt.
     const parts = [
       `# Task: ${ticket.title}`,
       "",
@@ -2566,6 +2913,7 @@ class OrchestratorImpl
   private buildExecutionPrompt(
     ticket: Ticket,
     plan: string,
+    config: Config,
     resolvedImagePaths: string[] = [],
     imageWarnings: string[] = [],
   ): string {
@@ -2586,6 +2934,11 @@ class OrchestratorImpl
       for (const criterion of ticket.acceptanceCriteria) {
         parts.push(`- [ ] ${criterion}`);
       }
+    }
+
+    const priorWork = this.maybeBuildPriorWorkBlock(ticket, config);
+    if (priorWork) {
+      parts.push("", priorWork);
     }
 
     const imageSection = buildImagePromptSection(
